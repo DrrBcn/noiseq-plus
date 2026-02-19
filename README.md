@@ -14,7 +14,7 @@ No installation, server, or dependencies required. The entire tool runs in a sin
 
 ## Live Demo
 
-Visit: **https://drojas-rueda.github.io/noiseq-plus/**
+Visit: **[https://drojas-rueda.github.io/noiseq-plus/](https://drrbcn.github.io/noiseq-plus/)**
 
 ## What It Does
 
