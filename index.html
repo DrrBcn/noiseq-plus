@@ -1,0 +1,1068 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>NoiseQ+ — Road Traffic Noise Health Impact Assessment Tool</title>
+<meta name="description" content="Estimate the population health burden of road traffic noise using WHO methodology. Free, open-source tool for public health practitioners."/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Source Sans 3','Segoe UI',system-ui,sans-serif;background:#f4f1ee;color:#2d1a12;-webkit-font-smoothing:antialiased}
+@media print{.no-print{display:none!important}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useCallback,useMemo}=React;
+// ── Lightweight SVG chart components (no external dependency) ──
+function SimpleBarChart({data,width=600,height=180,labelWidth=130}){
+  const maxVal=Math.max(...data.map(d=>d.value),1);
+  const barH=Math.min(28,Math.floor((height-20)/data.length)-8);
+  return(
+    React.createElement("svg",{width:"100%",viewBox:"0 0 "+width+" "+height,style:{fontFamily:font,overflow:"visible"}},
+      data.map((d,i)=>{
+        const y=10+i*(barH+10);
+        const barW=Math.max(2,(d.value/maxVal)*(width-labelWidth-60));
+        return React.createElement("g",{key:i},
+          React.createElement("text",{x:labelWidth-8,y:y+barH/2+4,textAnchor:"end",fontSize:13,fill:P.dark,fontWeight:600},d.name),
+          React.createElement("rect",{x:labelWidth,y:y,width:barW,height:barH,rx:3,fill:d.color||P.terra}),
+          React.createElement("text",{x:labelWidth+barW+8,y:y+barH/2+4,fontSize:12,fill:P.textMd,fontWeight:600},fmt(d.value))
+        );
+      })
+    )
+  );
+}
+function SimpleLineChart({series,xMin,xMax,yMin,yMax,width=620,height=260,xLabel,yLabel,yDecimals}){
+  const pad={l:58,r:20,t:38,b:48};
+  const cw=width-pad.l-pad.r,ch=height-pad.t-pad.b;
+  const sx=x=>(x-xMin)/(xMax-xMin)*cw+pad.l;
+  const sy=y=>pad.t+ch-(y-yMin)/(yMax-yMin)*ch;
+  const xTicks=[];for(let x=xMin;x<=xMax;x+=5)xTicks.push(x);
+  const yRange=yMax-yMin;const yStep=yRange<=1?0.1:yRange<=5?1:yRange<=20?5:10;
+  const yTicks=[];for(let y=yMin;y<=yMax+0.001;y+=yStep)yTicks.push(Math.round(y*1000)/1000);
+  const dec=yDecimals!=null?yDecimals:(yStep<1?1:0);
+  return(
+    React.createElement("svg",{width:"100%",viewBox:"0 0 "+width+" "+height,style:{fontFamily:font}},
+      // grid
+      yTicks.map((y,i)=>React.createElement("line",{key:"gy"+i,x1:pad.l,x2:pad.l+cw,y1:sy(y),y2:sy(y),stroke:P.inputBd,strokeDasharray:"3 3"})),
+      // axes
+      React.createElement("line",{x1:pad.l,x2:pad.l+cw,y1:pad.t+ch,y2:pad.t+ch,stroke:P.inputBd,strokeWidth:1}),
+      React.createElement("line",{x1:pad.l,x2:pad.l,y1:pad.t,y2:pad.t+ch,stroke:P.inputBd,strokeWidth:1}),
+      // x ticks
+      xTicks.map((x,i)=>React.createElement("text",{key:"xt"+i,x:sx(x),y:pad.t+ch+16,textAnchor:"middle",fontSize:10,fill:P.textMd},x)),
+      // y ticks
+      yTicks.map((y,i)=>React.createElement("text",{key:"yt"+i,x:pad.l-6,y:sy(y)+3,textAnchor:"end",fontSize:10,fill:P.textMd},y.toFixed(dec))),
+      // axis labels
+      xLabel&&React.createElement("text",{x:pad.l+cw/2,y:height-4,textAnchor:"middle",fontSize:12,fill:P.textMd},xLabel),
+      yLabel&&React.createElement("text",{x:14,y:pad.t+ch/2,textAnchor:"middle",fontSize:12,fill:P.textMd,transform:"rotate(-90,14,"+(pad.t+ch/2)+")"},yLabel),
+      // lines
+      series.map((s,si)=>{
+        const pts=s.data.map(d=>sx(d.x)+","+sy(d.y)).join(" ");
+        return React.createElement("g",{key:si},
+          React.createElement("polyline",{points:pts,fill:"none",stroke:s.color,strokeWidth:2.5}),
+          // legend
+          React.createElement("line",{x1:pad.l+si*200,x2:pad.l+si*200+20,y1:14,y2:14,stroke:s.color,strokeWidth:2.5}),
+          React.createElement("text",{x:pad.l+si*200+25,y:18,fontSize:11,fill:P.dark,fontWeight:600},s.name)
+        );
+      })
+    )
+  );
+}
+
+// ================================================================
+// NOISEQ+ v3.0 — CALCULATION ENGINE
+// Peer-reviewed update: all critical/important fixes applied
+// ================================================================
+
+const NOISE_BANDS=[
+  {id:"b1",label:"45\u201349",min:45,max:49,midpoint:47},
+  {id:"b2",label:"50\u201354",min:50,max:54,midpoint:52},
+  {id:"b3",label:"55\u201359",min:55,max:59,midpoint:57},
+  {id:"b4",label:"60\u201364",min:60,max:64,midpoint:62},
+  {id:"b5",label:"65\u201369",min:65,max:69,midpoint:67},
+  {id:"b6",label:"70\u201374",min:70,max:74,midpoint:72},
+  {id:"b7",label:"75+",min:75,max:80,midpoint:77},
+];
+
+const HEALTH_OUTCOMES={
+  ihd:{
+    name:"Ischemic Heart Disease",shortName:"Ischemic Heart Disease",abbrev:"IHD",
+    rrPer10dB:1.08,rrLow:1.01,rrHigh:1.15,
+    source:"van Kempen et al. 2018 (WHO Environmental Noise Guidelines)",
+    type:"incidence",metric:"Lden",threshold:53,defaultBI:285,
+    biSource:"GBD 2021 global age-standardized estimate",
+    ageGroup:"Adults aged 30 years and older",gradeRating:"High",
+    color:"#7a3a23",
+    description:"Includes angina, coronary artery disease, and heart attack. This is the cardiovascular outcome with the strongest evidence for noise effects.",
+    dalyDW:0.08,dalyDWNote:"Severity-weighted average across mild (DW 0.033), moderate (0.072), and acute (0.432) IHD states",
+    dalyDuration:5,dalyDurNote:"Average duration of incident IHD morbidity episode",
+  },
+  stroke:{
+    name:"Stroke",shortName:"Stroke",abbrev:"Stroke",
+    rrPer10dB:1.025,rrLow:1.009,rrHigh:1.041,
+    source:"Pershagen et al. 2025 (Environ Epidemiol 9(3):e400)",
+    type:"incidence",metric:"Lden",threshold:53,defaultBI:215,
+    biSource:"GBD 2021 global age-standardized estimate",
+    ageGroup:"Adults aged 30 years and older",gradeRating:"Moderate",
+    color:"#6b4c3b",
+    description:"Includes both ischemic and hemorrhagic stroke.",
+    dalyDW:0.07,dalyDWNote:"Weighted average across mild long-term (DW 0.031) and moderate/severe stroke states",
+    dalyDuration:4,dalyDurNote:"Average duration accounting for case fatality and recovery",
+  },
+  hf:{
+    name:"Heart Failure",shortName:"Heart Failure",abbrev:"HF",
+    rrPer10dB:1.04,rrLow:1.02,rrHigh:1.07,
+    source:"S\u00f8rensen et al. 2024, Redox Biology 69:102995 (Umbrella+ Review)",
+    type:"incidence",metric:"Lden",threshold:53,defaultBI:190,
+    biSource:"GBD 2021 global age-standardized estimate",
+    ageGroup:"Adults aged 30 years and older",gradeRating:"Moderate",
+    color:"#c28459",
+    description:"A condition where the heart cannot pump blood efficiently enough to meet the body\u2019s needs.",
+    dalyDW:0.05,dalyDWNote:"Weighted average across mild (DW 0.041) and moderate (0.072) heart failure",
+    dalyDuration:6,dalyDurNote:"Average duration reflecting chronic progressive course",
+  },
+  annoyance:{
+    name:"High Annoyance",shortName:"High Annoyance",abbrev:"HA",
+    type:"erf",metric:"Lden",threshold:45,
+    dw:0.011,dwLow:0.006,dwHigh:0.02,
+    source:"WHO 2018 Environmental Noise Guidelines (Guski et al. 2017, IJERPH 14(12):1539)",
+    ageGroup:"Adults aged 18 years and older",gradeRating:"Low",
+    color:"#a0522d",
+    description:"Severe noise-related annoyance that interferes with daily activities, concentration, and quality of life.",
+  },
+  sleep:{
+    name:"High Sleep Disturbance",shortName:"High Sleep Disturbance",abbrev:"HSD",
+    type:"erf",metric:"Lnight",threshold:40,
+    dw:0.009,dwLow:0.005,dwHigh:0.07,
+    source:"Miedema & Vos 2007 (Behav Sleep Med 5(1):1\u201320; adopted in EU Directive 2020/367)",
+    ageGroup:"Adults aged 18 years and older",gradeRating:"Moderate",
+    color:"#4a3728",
+    description:"Significant noise-induced sleep disruption, including difficulty falling asleep, awakenings, and reduced sleep quality.",
+  },
+};
+
+const DW_PRESETS={
+  who2024:{label:"WHO 2024 (Recommended)",annDw:0.011,slpDw:0.009,note:"Empirically derived from 4,056 respondents using standardized GBD paired-comparison methods (Charalampous et al. 2024, BMJ Public Health 2(1):e000470)"},
+  rivm2018:{label:"RIVM 2018 (Revised)",annDw:0.01,slpDw:0.0175,note:"European Commission-commissioned update (van Kamp et al. RIVM Report 2018-0121)"},
+  who2011:{label:"WHO/JRC 2011 (Legacy)",annDw:0.02,slpDw:0.07,note:"Original expert-based values (Fritschi et al. 2011, WHO ISBN 978-92-890-0229-5). Used in most published studies before 2024"},
+};
+
+const PAGES=["Welcome","Location and Population","Health Data","Results","Sensitivity Analysis","Methods"];
+
+// ── Exposure-response functions ──
+// %HA: Guski et al. 2017, codified in EU Directive 2020/367 Annex III
+function calcPercentHA(lden){
+  if(lden<45)return 0;
+  const x=Math.min(lden,75);
+  return Math.max(0,78.9270-3.1162*x+0.0342*x*x);
+}
+// %HSD: Miedema & Vos 2007, adopted in WHO/JRC 2011 and EU Directive 2020/367
+function calcPercentHSD(lnight){
+  if(lnight<40)return 0;
+  const x=Math.min(lnight,65);
+  return Math.max(0,20.8-1.05*x+0.01486*x*x);
+}
+function ldenToLnight(lden,offset){return lden-(offset||9);}
+
+// ── PAF calculation ──
+function calculatePAF(exposureDist,totalPop,outcomeKey,counterfactual,baselineRate){
+  const o=HEALTH_OUTCOMES[outcomeKey];
+  let totalPropExposed=0;
+  const calcCases=(rr)=>{
+    let s=0;
+    NOISE_BANDS.forEach((band)=>{
+      const pi=(exposureDist[band.id]||0)/100;
+      if(band.midpoint<=counterfactual)return;
+      s+=pi*(Math.pow(rr,(band.midpoint-counterfactual)/10)-1);
+    });
+    const paf=s/(s+1);
+    return{paf,cases:paf*baselineRate*totalPop/100000};
+  };
+  NOISE_BANDS.forEach((band)=>{
+    const pi=(exposureDist[band.id]||0)/100;
+    if(band.midpoint>counterfactual)totalPropExposed+=pi;
+  });
+  const central=calcCases(o.rrPer10dB);
+  const low=calcCases(o.rrLow);
+  const high=calcCases(o.rrHigh);
+  // Outcome-specific CVD DALY (YLD only)
+  const dw=o.dalyDW||0.08;
+  const dur=o.dalyDuration||5;
+  return{
+    paf:Math.round(central.paf*10000)/100,
+    cases:Math.round(central.cases*10)/10,
+    casesLow:Math.round(low.cases*10)/10,
+    casesHigh:Math.round(high.cases*10)/10,
+    rate:Math.round(central.cases/totalPop*100000*10)/10,
+    dalys:Math.round(central.cases*dw*dur),
+    dalysLow:Math.round(low.cases*dw*dur),
+    dalysHigh:Math.round(high.cases*dw*dur),
+    exposedProp:totalPropExposed*100,
+    dalyDW:dw,dalyDuration:dur,
+  };
+}
+
+// ── ERF calculation ──
+function calculateERF(exposureDist,totalPop,outcomeKey,dwOverride,lnightOffset){
+  const o=HEALTH_OUTCOMES[outcomeKey];
+  let totalAffected=0;
+  NOISE_BANDS.forEach((band)=>{
+    const popInBand=totalPop*(exposureDist[band.id]||0)/100;
+    const pct=outcomeKey==="annoyance"?calcPercentHA(band.midpoint):calcPercentHSD(ldenToLnight(band.midpoint,lnightOffset));
+    totalAffected+=popInBand*pct/100;
+  });
+  const dw=dwOverride||o.dw;
+  return{
+    totalAffected:Math.round(totalAffected),
+    percentAffected:Math.round((totalAffected/totalPop)*1000)/10,
+    dalys:Math.round(totalAffected*dw),
+    dalysLow:Math.round(totalAffected*o.dwLow),
+    dalysHigh:Math.round(totalAffected*(dwOverride||o.dwHigh)),
+  };
+}
+
+// ── Approximate distribution from single threshold ──
+function genDistFromThreshold(threshold,pctAbove){
+  const dist={};
+  const above=NOISE_BANDS.filter(b=>b.midpoint>=threshold);
+  const below=NOISE_BANDS.filter(b=>b.midpoint<threshold);
+  const pctBelow=100-pctAbove;
+  const wA=above.map((_,i)=>Math.pow(0.55,i));
+  const tA=wA.reduce((a,b)=>a+b,0)||1;
+  above.forEach((b,i)=>{dist[b.id]=Math.round(pctAbove*wA[i]/tA*10)/10;});
+  if(below.length>0){
+    const wB=below.map((_,i)=>i+1);
+    const tB=wB.reduce((a,b)=>a+b,0);
+    below.forEach((b,i)=>{dist[b.id]=Math.round(pctBelow*wB[i]/tB*10)/10;});
+  }
+  const sum=Object.values(dist).reduce((a,b)=>a+b,0);
+  const firstKey=NOISE_BANDS[0].id;
+  dist[firstKey]=Math.round((dist[firstKey]+100-sum)*10)/10;
+  NOISE_BANDS.forEach(b=>{if(!dist[b.id])dist[b.id]=0;});
+  return dist;
+}
+
+// ── Sensitivity scenarios ──
+function runSensitivity(dist,pop,outcomes,cf,rates,lnOffset){
+  const cfScenarios=[];
+  [45,50,53,55].forEach(c=>{
+    const row={label:c+" dB",cf:c};
+    outcomes.filter(k=>HEALTH_OUTCOMES[k].type==="incidence").forEach(k=>{
+      const r=calculatePAF(dist,pop,k,c,rates[k]||HEALTH_OUTCOMES[k].defaultBI);
+      row[k+"_cases"]=r.cases;row[k+"_dalys"]=r.dalys;
+    });
+    cfScenarios.push(row);
+  });
+  const dwScenarios=[];
+  Object.entries(DW_PRESETS).forEach(([key,p])=>{
+    const row={label:p.label,key};
+    if(outcomes.includes("annoyance")){
+      const r=calculateERF(dist,pop,"annoyance",p.annDw,lnOffset);
+      row.ann_cases=r.totalAffected;row.ann_dalys=r.dalys;
+    }
+    if(outcomes.includes("sleep")){
+      const r=calculateERF(dist,pop,"sleep",p.slpDw,lnOffset);
+      row.slp_cases=r.totalAffected;row.slp_dalys=r.dalys;
+    }
+    dwScenarios.push(row);
+  });
+  // IHD RR sensitivity (Pershagen vs WHO)
+  const rrScenarios=[];
+  if(outcomes.includes("ihd")){
+    const biRate=rates.ihd||HEALTH_OUTCOMES.ihd.defaultBI;
+    [{label:"WHO/van Kempen 2018 (default)",rr:1.08,rrL:1.01,rrH:1.15},
+     {label:"Pershagen 2025 (overall)",rr:1.017,rrL:0.990,rrH:1.044},
+     {label:"Pershagen 2025 (low-bias)",rr:1.026,rrL:1.009,rrH:1.044},
+     {label:"Babisch 2014 (LDN metric)",rr:1.08,rrL:1.04,rrH:1.13},
+    ].forEach(sc=>{
+      let s=0;
+      NOISE_BANDS.forEach(band=>{
+        const pi=(dist[band.id]||0)/100;
+        if(band.midpoint<=cf)return;
+        s+=pi*(Math.pow(sc.rr,(band.midpoint-cf)/10)-1);
+      });
+      const paf=s/(s+1);
+      const cases=paf*biRate*pop/100000;
+      let sL=0,sH=0;
+      NOISE_BANDS.forEach(band=>{
+        const pi=(dist[band.id]||0)/100;
+        if(band.midpoint<=cf)return;
+        sL+=pi*(Math.pow(sc.rrL,(band.midpoint-cf)/10)-1);
+        sH+=pi*(Math.pow(sc.rrH,(band.midpoint-cf)/10)-1);
+      });
+      const casesL=(sL/(sL+1))*biRate*pop/100000;
+      const casesH=(sH/(sH+1))*biRate*pop/100000;
+      rrScenarios.push({label:sc.label,rr:sc.rr,cases:Math.round(cases*10)/10,casesLow:Math.round(casesL*10)/10,casesHigh:Math.round(casesH*10)/10});
+    });
+  }
+  return{cfScenarios,dwScenarios,rrScenarios};
+}
+
+// ── CSV Export ──
+function exportCSV(results,locLabel,population,effCF,outcomes){
+  let csv="NoiseQ+ v3.0 Results Export\n";
+  csv+="Location,"+locLabel+"\n";
+  csv+="Population,"+population+"\n";
+  csv+="Reference level (dB Lden),"+effCF+"\n\n";
+  csv+="Outcome,Metric,Cases/Affected,Lower CI,Upper CI,Rate per 100k,PAF %,DALYs,DALYs Lower,DALYs Upper\n";
+  if(results.cvd){
+    Object.entries(results.cvd).forEach(([k,r])=>{
+      csv+=HEALTH_OUTCOMES[k].shortName+",Attributable cases/yr,"+r.cases+","+r.casesLow+","+r.casesHigh+","+r.rate+","+r.paf+","+r.dalys+","+r.dalysLow+","+r.dalysHigh+"\n";
+    });
+  }
+  if(results.erf){
+    Object.entries(results.erf).forEach(([k,r])=>{
+      csv+=HEALTH_OUTCOMES[k].shortName+",People affected,"+r.totalAffected+",,,"+r.percentAffected+"%,,"+r.dalys+","+r.dalysLow+","+r.dalysHigh+"\n";
+    });
+  }
+  csv+="\nTotal DALYs,"+results.totalDalys+","+results.totalDalysLow+","+results.totalDalysHigh+"\n";
+  csv+="\nNote: CVD DALYs represent YLD only (years lived with disability). YLL from premature mortality is not included.\n";
+  csv+="Generated by NoiseQ+ v3.0 | David Rojas-Rueda | Colorado State University | 2026\n";
+  const blob=new Blob([csv],{type:"text/csv"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download="noiseq_results_"+locLabel.replace(/[^a-zA-Z0-9]/g,"_")+".csv";
+  a.click();
+}
+
+// ================================================================
+// DESIGN SYSTEM
+// ================================================================
+const P={
+  terra:"#7a3a23",gold:"#c28459",cream:"#f4f1ee",dark:"#2d1a12",white:"#ffffff",
+  inputBd:"#e5dfda",textMd:"#5c4a3f",textLt:"#8c7b6f",
+  okBg:"#f0f7f2",ok:"#2d6a4f",warnBg:"#fdf8f0",
+};
+const font="'Source Sans 3','Segoe UI',system-ui,sans-serif";
+const shadow="0 4px 12px rgba(45,26,18,0.08)";
+const cardStyle={background:P.white,borderRadius:4,padding:"28px 32px",boxShadow:shadow,borderTop:"4px solid "+P.gold,marginBottom:24};
+const labelStyle={display:"block",fontSize:14,fontWeight:600,color:P.dark,marginBottom:6,fontFamily:font};
+const inputStyle={width:"100%",padding:"10px 14px",border:"1px solid "+P.inputBd,borderRadius:4,fontSize:14,color:P.dark,background:P.white,boxSizing:"border-box",fontFamily:font,fontWeight:500,outline:"none"};
+const btnPrimary={padding:"12px 28px",background:P.terra,color:P.white,border:"none",borderRadius:4,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:font,boxShadow:"0 2px 8px rgba(122,58,35,0.25)"};
+const btnSecondary={padding:"11px 24px",background:P.white,color:P.terra,border:"2px solid "+P.terra,borderRadius:4,fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:font};
+const disclaimerStyle={background:P.white,border:"1px solid "+P.gold,borderLeft:"6px solid "+P.gold,borderRadius:4,padding:"14px 20px",fontSize:13,color:P.textMd,lineHeight:1.65,fontFamily:font,fontWeight:500,marginTop:20};
+const thStyle={textAlign:"left",padding:"10px 12px",fontSize:11,color:P.textLt,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.6px",fontFamily:font};
+const tdStyle={padding:"12px",fontSize:14,fontFamily:font,fontWeight:500};
+const fmt=(n)=>{if(n==null||isNaN(n))return"\u2014";return n.toLocaleString(undefined,{maximumFractionDigits:1});};
+
+// ================================================================
+// UI COMPONENTS
+// ================================================================
+function Logo({size=24}){return(<span style={{fontSize:size,fontWeight:800,fontFamily:font,letterSpacing:"-0.5px"}}><span style={{color:P.white}}>Noise</span><span style={{color:"#f0c9aa"}}>Q</span><span style={{color:P.gold,fontSize:size*0.7,verticalAlign:"super"}}>+</span></span>);}
+function LogoDark({size=28}){return(<span style={{fontSize:size,fontWeight:800,fontFamily:font,letterSpacing:"-0.5px"}}><span style={{color:P.dark}}>Noise</span><span style={{color:P.terra}}>Q</span><span style={{color:P.gold,fontSize:size*0.65,verticalAlign:"super"}}>+</span></span>);}
+
+function Tip({text}){
+  const[open,setOpen]=useState(false);
+  return(<span style={{position:"relative",display:"inline-block",marginLeft:6}}>
+    <span onClick={()=>setOpen(!open)} onMouseEnter={()=>setOpen(true)} onMouseLeave={()=>setOpen(false)}
+      style={{display:"inline-flex",alignItems:"center",justifyContent:"center",width:18,height:18,borderRadius:"50%",background:P.gold+"22",color:P.gold,fontSize:11,fontWeight:800,cursor:"help",border:"1.5px solid "+P.gold,userSelect:"none",fontFamily:font}}>?</span>
+    {open&&<span style={{position:"absolute",bottom:"calc(100% + 8px)",left:"50%",transform:"translateX(-50%)",background:P.dark,color:"#fff",padding:"10px 14px",borderRadius:6,fontSize:13,lineHeight:1.55,width:300,zIndex:100,boxShadow:"0 8px 24px rgba(45,26,18,0.25)",pointerEvents:"none",fontFamily:font,fontWeight:500}}>{text}</span>}
+  </span>);
+}
+
+function Nav({step,goTo,maxStep}){
+  return(<div className="no-print" style={{display:"flex",gap:0,marginBottom:28,borderBottom:"2px solid "+P.inputBd,flexWrap:"wrap"}}>
+    {PAGES.map((name,i)=>(<button key={i} onClick={()=>i<=maxStep?goTo(i):null}
+      style={{padding:"12px 16px",fontSize:13,fontWeight:step===i?700:500,fontFamily:font,color:step===i?P.terra:i<=maxStep?P.textMd:P.textLt,background:"none",border:"none",borderBottom:step===i?"3px solid "+P.terra:"3px solid transparent",cursor:i<=maxStep?"pointer":"default",marginBottom:-2,opacity:i<=maxStep?1:0.45}}>
+      <span style={{marginRight:5,fontSize:11,opacity:0.5,fontWeight:600}}>{i+1}.</span>{name}</button>))}
+  </div>);
+}
+
+function SectionHeading({children,accent}){
+  if(!accent)return<h2 style={{margin:"0 0 6px",fontSize:20,fontWeight:700,color:P.dark,fontFamily:font}}>{children}</h2>;
+  const parts=children.split(accent);
+  return(<h2 style={{margin:"0 0 6px",fontSize:20,fontWeight:700,color:P.dark,fontFamily:font}}>{parts[0]}<span style={{color:P.terra}}>{accent}</span>{parts[1]||""}</h2>);
+}
+
+// ================================================================
+// MAIN APPLICATION
+// ================================================================
+function NoiseQPlus(){
+  const[step,setStep]=useState(0);
+  const[maxStep,setMaxStep]=useState(0);
+  const[locName,setLocName]=useState("");
+  const[country,setCountry]=useState("");
+  const[population,setPopulation]=useState(500000);
+  const[expMode,setExpMode]=useState("distribution");
+  const[dist,setDist]=useState({b1:15,b2:25,b3:28,b4:18,b5:9,b6:4,b7:1});
+  const[simpThr,setSimpThr]=useState(55);
+  const[simpPct,setSimpPct]=useState(60);
+  const[outcomes,setOutcomes]=useState(["ihd","stroke","annoyance","sleep"]);
+  const[useCustomCF,setUseCustomCF]=useState(false);
+  const[customCF,setCustomCF]=useState(53);
+  const[customRates,setCustomRates]=useState({});
+  const[lnightOffset,setLnightOffset]=useState(9);
+
+  const goTo=(s)=>{setStep(s);if(s>maxStep)setMaxStep(s);};
+  const totalD=useMemo(()=>Object.values(dist).reduce((s,v)=>s+(parseFloat(v)||0),0),[dist]);
+  const effDist=useMemo(()=>expMode==="simplified"?genDistFromThreshold(simpThr,simpPct):dist,[expMode,dist,simpThr,simpPct]);
+  const effCF=useCustomCF?customCF:53;
+  const locLabel=locName?(locName+(country?", "+country:"")):"the assessed area";
+  const toggleOut=useCallback((key)=>{setOutcomes(prev=>prev.includes(key)?prev.filter(k=>k!==key):[...prev,key]);},[]);
+
+  const results=useMemo(()=>{
+    if(step<3)return null;
+    const cvd={};const erf={};
+    outcomes.forEach(k=>{
+      const o=HEALTH_OUTCOMES[k];
+      if(o.type==="incidence")cvd[k]=calculatePAF(effDist,population,k,effCF,customRates[k]||o.defaultBI);
+      else erf[k]=calculateERF(effDist,population,k,null,lnightOffset);
+    });
+    let totalDalys=0,totalDalysLow=0,totalDalysHigh=0;
+    Object.values(cvd).forEach(r=>{totalDalys+=r.dalys;totalDalysLow+=r.dalysLow;totalDalysHigh+=r.dalysHigh;});
+    Object.values(erf).forEach(r=>{totalDalys+=r.dalys;totalDalysLow+=r.dalysLow;totalDalysHigh+=r.dalysHigh;});
+    return{cvd,erf,totalDalys,totalDalysLow,totalDalysHigh};
+  },[step,outcomes,effDist,population,effCF,customRates,lnightOffset]);
+
+  const sens=useMemo(()=>{
+    if(step<4)return null;
+    return runSensitivity(effDist,population,outcomes,effCF,
+      Object.fromEntries(outcomes.map(k=>[k,customRates[k]||HEALTH_OUTCOMES[k].defaultBI])),lnightOffset);
+  },[step,outcomes,effDist,population,effCF,customRates,lnightOffset]);
+
+  const cvdCurveData=useMemo(()=>{
+    return Array.from({length:28},(_,i)=>{
+      const db=50+i;
+      return{db,ihd:db>53?Math.pow(1.08,(db-53)/10):1,stroke:db>53?Math.pow(1.025,(db-53)/10):1,hf:db>53?Math.pow(1.04,(db-53)/10):1};
+    });
+  },[]);
+
+  // ════════════════════════════════════════════════════════════════
+  // RENDER
+  // ════════════════════════════════════════════════════════════════
+  return(
+    <div style={{background:P.cream,minHeight:"100vh",fontFamily:font}}>
+
+      {/* HEADER */}
+      <header style={{background:P.dark,padding:"18px 36px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <Logo size={26}/>
+        <div style={{fontSize:12,color:"rgba(255,255,255,0.5)",textAlign:"right",fontWeight:500,fontFamily:font}}>
+          {"v3.0 \u2014 David Rojas-Rueda | Colorado State University \u00b7 2026"}
+        </div>
+      </header>
+
+      <main style={{maxWidth:900,margin:"0 auto",padding:"32px 24px 60px"}}>
+        {step>0&&<Nav step={step} goTo={goTo} maxStep={maxStep}/>}
+
+        {/* ═══════ PAGE 0: WELCOME ═══════ */}
+        {step===0&&(
+          <div>
+            <div style={{...cardStyle,padding:"48px 40px",textAlign:"left"}}>
+              <LogoDark size={36}/>
+              <h2 style={{margin:"20px 0 14px",fontSize:26,fontWeight:700,color:P.dark,fontFamily:font,lineHeight:1.3}}>
+                Estimate how <span style={{color:P.terra}}>road traffic noise</span> affects your population's health
+              </h2>
+              <p style={{color:P.textMd,fontSize:15,lineHeight:1.75,maxWidth:640,margin:"0 0 32px",fontWeight:500}}>
+                Exposure to road traffic noise contributes to cardiovascular disease, disrupts sleep, and causes chronic annoyance, affecting millions worldwide. NoiseQ+ estimates the number of health cases attributable to excess noise levels in your city, region, or country, based on robust epidemiological evidence from systematic reviews and meta-analyses.
+              </p>
+              <button onClick={()=>goTo(1)} style={{...btnPrimary,padding:"14px 36px",fontSize:16}}>Start Assessment</button>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20,marginTop:4}}>
+              {[
+                {t:"Health outcomes assessed",b:"Ischemic heart disease, stroke, heart failure, chronic annoyance, and sleep disturbance."},
+                {t:"What you will see",b:"Estimated attributable cases, rates per 100,000, population attributable fraction, and Disability-Adjusted Life Years (DALYs)."},
+                {t:"Methodology",b:"Comparative risk assessment approach recommended by the World Health Organization for estimating the health burden of environmental risk factors."},
+                {t:"Scientific basis",b:"Dose-response evidence from systematic reviews and meta-analyses, including the WHO Environmental Noise Guidelines for Europe (2018) and subsequent updates through 2025."},
+              ].map((c,i)=>(
+                <div key={i} style={{...cardStyle,padding:"22px 26px",marginBottom:0}}>
+                  <h4 style={{margin:"0 0 8px",fontSize:11,color:P.terra,textTransform:"uppercase",letterSpacing:"1px",fontWeight:700,fontFamily:font}}>{c.t}</h4>
+                  <p style={{margin:0,fontSize:14,color:P.textMd,lineHeight:1.65,fontWeight:500}}>{c.b}</p>
+                </div>
+              ))}
+            </div>
+            <div style={disclaimerStyle}>
+              NoiseQ+ provides estimates based on the best available epidemiological evidence. Results involve inherent uncertainty and should be interpreted alongside local context. Dose-response functions are primarily derived from European populations; applicability to other settings has not been fully established.
+            </div>
+          </div>
+        )}
+
+        {/* ═══════ PAGE 1: LOCATION AND POPULATION ═══════ */}
+        {step===1&&(
+          <div>
+            <div style={cardStyle}>
+              <SectionHeading accent="Location">Location and Population</SectionHeading>
+              <p style={{color:P.textMd,fontSize:14,margin:"0 0 24px",fontWeight:500}}>Identify the area being assessed and provide population and noise exposure data.</p>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:24}}>
+                <div><label style={labelStyle}>City, neighborhood, or region</label><input value={locName} onChange={e=>setLocName(e.target.value)} style={inputStyle} placeholder="e.g., Barcelona, Mexico City, Accra"/></div>
+                <div><label style={labelStyle}>Country</label><input value={country} onChange={e=>setCountry(e.target.value)} style={inputStyle} placeholder="e.g., Spain, Mexico, Ghana"/></div>
+              </div>
+              <div style={{marginBottom:8}}>
+                <label style={labelStyle}>
+                  Population size
+                  <Tip text="For cardiovascular outcomes (IHD, stroke, heart failure), the relevant population is adults aged 30 and older. For annoyance and sleep disturbance, adults 18 and older are relevant. If you only have total adult population, enter that \u2014 results will be approximate."/>
+                </label>
+                <input type="number" value={population} onChange={e=>setPopulation(parseInt(e.target.value)||0)} style={{...inputStyle,maxWidth:280}} placeholder="e.g., 500000"/>
+                <div style={{fontSize:12,color:P.textLt,marginTop:4,fontWeight:500}}>{"Adults aged 30+ for cardiovascular outcomes; adults aged 18+ for annoyance and sleep disturbance."}</div>
+              </div>
+            </div>
+            <div style={cardStyle}>
+              <h3 style={{margin:"0 0 4px",fontSize:16,fontWeight:700,color:P.dark,fontFamily:font}}>
+                Noise Exposure Data
+                <Tip text="Lden (day-evening-night noise level) is the standard noise metric used by the European Union and WHO. It accounts for higher sensitivity to noise during evening (+5 dB penalty) and night (+10 dB penalty) hours."/>
+              </h3>
+              <p style={{color:P.textMd,fontSize:14,margin:"0 0 18px",fontWeight:500}}>How is your population distributed across noise levels?</p>
+              <div style={{display:"flex",gap:12,marginBottom:20}}>
+                {[
+                  {key:"distribution",label:"I have detailed noise data (by 5 dB bands)",tip:"Provides more accurate estimates. Available from noise mapping studies or environmental agencies."},
+                  {key:"simplified",label:"I only know the percentage above a threshold",tip:"The tool will estimate an approximate distribution. Use detailed data if available."},
+                ].map(m=>(
+                  <button key={m.key} onClick={()=>setExpMode(m.key)}
+                    style={{flex:1,padding:"14px 16px",fontSize:13,textAlign:"left",lineHeight:1.5,border:expMode===m.key?"2px solid "+P.terra:"1.5px solid "+P.inputBd,borderRadius:4,background:expMode===m.key?P.terra+"0a":P.white,color:expMode===m.key?P.terra:P.textMd,cursor:"pointer",fontWeight:expMode===m.key?700:500,fontFamily:font}}>
+                    {m.label}<Tip text={m.tip}/>
+                  </button>
+                ))}
+              </div>
+              {expMode==="distribution"?(
+                <div>
+                  <p style={{fontSize:13,color:P.textMd,margin:"0 0 10px",fontWeight:500}}>Enter the percentage of the population in each noise level band. Values must sum to 100%.</p>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:8,marginBottom:8}}>
+                    {NOISE_BANDS.map(band=>(
+                      <div key={band.id} style={{textAlign:"center"}}>
+                        <label style={{fontSize:11,color:P.textLt,fontWeight:600,fontFamily:font}}>{band.label} dB</label>
+                        <div style={{position:"relative",marginTop:4}}>
+                          <input type="number" value={dist[band.id]} min={0} max={100} step={0.1}
+                            onChange={e=>setDist(prev=>({...prev,[band.id]:e.target.value===""?"":parseFloat(e.target.value)||0}))}
+                            style={{...inputStyle,textAlign:"center",padding:"9px 20px 9px 6px"}}/>
+                          <span style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",fontSize:12,color:P.textLt,pointerEvents:"none",fontWeight:600}}>%</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{fontSize:13,fontWeight:700,fontFamily:font,color:Math.abs(totalD-100)<0.5?P.ok:"#b91c1c"}}>
+                    Total: {totalD.toFixed(1)}% {Math.abs(totalD-100)<0.5&&"\u2713"}
+                  </div>
+                </div>
+              ):(
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+                  <div><label style={labelStyle}>Noise threshold (dB Lden)</label>
+                    <select value={simpThr} onChange={e=>setSimpThr(parseInt(e.target.value))} style={inputStyle}>
+                      {[45,50,55,60,65,70].map(v=><option key={v} value={v}>{v} dB</option>)}
+                    </select></div>
+                  <div><label style={labelStyle}>% of population above this level</label>
+                    <input type="number" value={simpPct} onChange={e=>setSimpPct(parseFloat(e.target.value)||0)} style={inputStyle} min={0} max={100}/></div>
+                  <div style={{gridColumn:"1/-1",padding:"12px 18px",background:P.terra+"08",borderRadius:4,border:"1px solid "+P.terra+"20",fontSize:13,color:P.terra,fontWeight:500}}>
+                    The tool will estimate an approximate noise distribution using exponential decay weighting. For more precise results, use the detailed input option.
+                  </div>
+                </div>
+              )}
+            </div>
+            {/* Lnight offset setting */}
+            <div style={cardStyle}>
+              <h3 style={{margin:"0 0 4px",fontSize:16,fontWeight:700,color:P.dark,fontFamily:font}}>
+                Nighttime Noise Conversion
+                <Tip text="Sleep disturbance is assessed using nighttime noise (Lnight). If you only have Lden data, the tool converts using an offset. The default of 9 dB is widely used in Europe. Urban areas with heavy nighttime traffic may use 7 dB; quiet nighttime areas may use 10 dB."/>
+              </h3>
+              <p style={{color:P.textMd,fontSize:14,margin:"0 0 14px",fontWeight:500}}>
+                How should the tool estimate nighttime noise levels (Lnight) from your Lden data?
+              </p>
+              <div style={{display:"flex",alignItems:"center",gap:12}}>
+                <span style={{fontSize:14,fontWeight:600,color:P.dark}}>Lnight = Lden minus</span>
+                <select value={lnightOffset} onChange={e=>setLnightOffset(parseInt(e.target.value))} style={{...inputStyle,width:80}}>
+                  {[7,8,9,10].map(v=><option key={v} value={v}>{v} dB</option>)}
+                </select>
+                <span style={{fontSize:13,color:P.textLt,fontWeight:500}}>(default: 9 dB)</span>
+              </div>
+              <div style={{fontSize:12,color:P.textLt,marginTop:8,fontWeight:500}}>
+                This conversion is applied only for the sleep disturbance calculation. If you have direct Lnight measurements, contact the tool developers for future direct-input support.
+              </div>
+            </div>
+            <div style={{display:"flex",justifyContent:"flex-end",gap:10}}>
+              <button onClick={()=>goTo(0)} style={btnSecondary}>Back</button>
+              <button onClick={()=>goTo(2)} style={btnPrimary} disabled={expMode==="distribution"&&Math.abs(totalD-100)>1}>Continue</button>
+            </div>
+          </div>
+        )}
+
+        {/* ═══════ PAGE 2: HEALTH DATA ═══════ */}
+        {step===2&&(
+          <div>
+            <div style={cardStyle}>
+              <SectionHeading accent="Health">Health Data</SectionHeading>
+              <p style={{color:P.textMd,fontSize:14,margin:"0 0 24px",fontWeight:500}}>Select health outcomes and review baseline disease rates. Default dose-response values from meta-analyses are used.</p>
+              <div style={{marginBottom:24}}>
+                <label style={labelStyle}>Health outcomes to include</label>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                  {Object.entries(HEALTH_OUTCOMES).map(([key,o])=>{
+                    const sel=outcomes.includes(key);
+                    return(
+                      <label key={key} style={{display:"flex",alignItems:"flex-start",gap:10,padding:"14px 16px",borderRadius:4,border:sel?"2px solid "+P.terra:"1.5px solid "+P.inputBd,background:sel?P.terra+"08":P.white,cursor:"pointer"}}>
+                        <input type="checkbox" checked={sel} onChange={()=>toggleOut(key)} style={{marginTop:4,accentColor:P.terra}}/>
+                        <div>
+                          <div style={{fontWeight:700,fontSize:14,color:P.dark,fontFamily:font}}>{o.shortName}</div>
+                          <div style={{fontSize:12,color:P.textLt,marginTop:3,lineHeight:1.45,fontWeight:500}}>
+                            {o.type==="incidence"?"Relative risk: "+o.rrPer10dB+" per 10 dB | "+o.ageGroup:"Exposure-response function | "+o.ageGroup}
+                          </div>
+                          <div style={{fontSize:11,color:P.textLt,marginTop:2,fontStyle:"italic"}}>{o.source.split("(")[0].trim()}</div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+              <div style={{marginBottom:24}}>
+                <label style={labelStyle}>
+                  Reference noise level (counterfactual): {useCustomCF?customCF:53} dB Lden
+                  <Tip text="The counterfactual is the noise level below which no additional health risk is assumed. WHO recommends road traffic noise below 53 dB Lden. Sensitivity analysis testing other values is presented on the Sensitivity Analysis page."/>
+                </label>
+                <div style={{display:"flex",alignItems:"center",gap:12}}>
+                  <div style={{padding:"10px 20px",background:P.terra+"10",borderRadius:4,fontWeight:800,color:P.terra,fontSize:16,fontFamily:font,border:"1px solid "+P.terra+"30"}}>
+                    {useCustomCF?customCF:53} dB Lden
+                  </div>
+                  <label style={{fontSize:13,color:P.textMd,cursor:"pointer",display:"flex",alignItems:"center",gap:5,fontWeight:500}}>
+                    <input type="checkbox" checked={useCustomCF} onChange={e=>setUseCustomCF(e.target.checked)} style={{accentColor:P.terra}}/>Use a different value
+                  </label>
+                  {useCustomCF&&<input type="number" value={customCF} onChange={e=>setCustomCF(parseInt(e.target.value)||45)} style={{...inputStyle,width:80}} min={40} max={65}/>}
+                </div>
+              </div>
+              {outcomes.some(k=>HEALTH_OUTCOMES[k].type==="incidence")&&(
+                <div>
+                  <label style={labelStyle}>
+                    Baseline disease rates (new cases per 100,000 adults per year)
+                    <Tip text="Background rates of disease in your population, regardless of noise. Replace with local data from your health department or country statistics. Defaults are approximate global estimates from GBD 2021."/>
+                  </label>
+                  <p style={{fontSize:13,color:P.textMd,margin:"0 0 10px",fontWeight:500}}>
+                    Default values are approximate global estimates from the Global Burden of Disease (GBD) 2021 study. Replace with country-specific or local data from <a href="https://vizhub.healthdata.org/gbd-results/" target="_blank" style={{color:P.terra}}>healthdata.org</a> for more accurate estimates.
+                  </p>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                    {outcomes.filter(k=>HEALTH_OUTCOMES[k].type==="incidence").map(key=>{
+                      const o=HEALTH_OUTCOMES[key];
+                      const isC=customRates[key]!==undefined;
+                      return(
+                        <div key={key} style={{padding:"14px 16px",background:P.cream,borderRadius:4,border:"1px solid "+P.inputBd}}>
+                          <div style={{fontSize:13,fontWeight:700,color:P.dark,marginBottom:2,fontFamily:font}}>{o.shortName}</div>
+                          <div style={{fontSize:11,color:P.textLt,marginBottom:8,fontWeight:500}}>{o.ageGroup}</div>
+                          <div style={{display:"flex",alignItems:"center",gap:8}}>
+                            <input type="number" value={isC?customRates[key]:o.defaultBI} min={0}
+                              onChange={e=>setCustomRates(prev=>({...prev,[key]:parseFloat(e.target.value)||0}))}
+                              style={{...inputStyle,width:100}}/>
+                            <span style={{fontSize:12,color:P.textLt,fontWeight:500}}>per 100,000/yr</span>
+                            {isC&&<span style={{fontSize:11,color:P.terra,fontWeight:700}}>Custom</span>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {outcomes.some(k=>HEALTH_OUTCOMES[k].type==="erf")&&(
+                <div style={{marginTop:20,padding:"14px 18px",background:P.okBg,borderRadius:4,border:"1px solid #c6ddd0",fontSize:13,color:P.ok,fontWeight:500,lineHeight:1.6}}>
+                  <strong>Note:</strong> Annoyance and sleep disturbance do not require baseline disease rates. These are estimated directly from noise exposure levels using polynomial exposure-response functions from large population surveys.
+                </div>
+              )}
+            </div>
+            <div style={{display:"flex",justifyContent:"space-between"}}>
+              <button onClick={()=>goTo(1)} style={btnSecondary}>Back</button>
+              <button onClick={()=>goTo(3)} style={btnPrimary}>View Results</button>
+            </div>
+          </div>
+        )}
+
+        {/* ═══════ PAGE 3: RESULTS ═══════ */}
+        {step===3&&results&&(
+          <div>
+            <div style={{...cardStyle,background:P.dark,borderTop:"4px solid "+P.gold,color:P.white,padding:"24px 32px"}}>
+              <h2 style={{margin:"0 0 4px",fontSize:20,fontWeight:700,fontFamily:font}}>
+                {"Estimated health impact of road traffic noise in "}<span style={{color:P.gold}}>{locLabel}</span>
+              </h2>
+              <p style={{margin:0,fontSize:14,opacity:0.65,fontWeight:500}}>
+                {"Population assessed: "+fmt(population)+" adults | Reference level: "+effCF+" dB Lden"+(effCF===53?" (WHO guideline)":" (custom)")+" | Lnight offset: \u2212"+lnightOffset+" dB"}
+              </p>
+            </div>
+            <div style={cardStyle}>
+              <h3 style={{margin:"0 0 14px",fontSize:16,color:P.dark,fontWeight:700,fontFamily:font}}>
+                Estimated <span style={{color:P.terra}}>attributable health cases</span>
+                <Tip text="Estimated new health cases per year attributable to road traffic noise above the reference level. The range reflects uncertainty in the dose-response evidence (95% CI of the relative risk)."/>
+              </h3>
+              {Object.keys(results.cvd).length>0&&(
+                <table style={{width:"100%",borderCollapse:"collapse",marginBottom:16}}>
+                  <thead><tr style={{borderBottom:"2px solid "+P.inputBd}}>
+                    <th style={thStyle}>Health outcome</th><th style={{...thStyle,textAlign:"right"}}>Cases per year</th><th style={{...thStyle,textAlign:"right"}}>95% CI</th><th style={{...thStyle,textAlign:"right"}}>Rate per 100,000</th><th style={{...thStyle,textAlign:"right"}}>PAF</th>
+                  </tr></thead>
+                  <tbody>
+                    {Object.entries(results.cvd).map(([key,r])=>(
+                      <tr key={key} style={{borderBottom:"1px solid "+P.inputBd}}>
+                        <td style={{...tdStyle,fontWeight:700}}>{HEALTH_OUTCOMES[key].shortName}</td>
+                        <td style={{...tdStyle,textAlign:"right",fontWeight:800,color:P.terra,fontSize:17}}>{fmt(r.cases)}</td>
+                        <td style={{...tdStyle,textAlign:"right",color:P.textLt,fontSize:13}}>({fmt(r.casesLow)} to {fmt(r.casesHigh)})</td>
+                        <td style={{...tdStyle,textAlign:"right"}}>{fmt(r.rate)}</td>
+                        <td style={{...tdStyle,textAlign:"right"}}>{r.paf}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {Object.keys(results.erf).length>0&&(
+                <table style={{width:"100%",borderCollapse:"collapse"}}>
+                  <thead><tr style={{borderBottom:"2px solid "+P.inputBd}}>
+                    <th style={thStyle}>Outcome</th><th style={{...thStyle,textAlign:"right"}}>People affected</th><th style={{...thStyle,textAlign:"right"}}>% of population</th>
+                  </tr></thead>
+                  <tbody>
+                    {Object.entries(results.erf).map(([key,r])=>(
+                      <tr key={key} style={{borderBottom:"1px solid "+P.inputBd}}>
+                        <td style={{...tdStyle,fontWeight:700}}>{HEALTH_OUTCOMES[key].shortName}</td>
+                        <td style={{...tdStyle,textAlign:"right",fontWeight:800,color:P.terra,fontSize:17}}>{fmt(r.totalAffected)}</td>
+                        <td style={{...tdStyle,textAlign:"right"}}>{r.percentAffected}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            {Object.keys(results.cvd).length>0&&(
+              <div style={cardStyle}>
+                <h3 style={{margin:"0 0 12px",fontSize:14,color:P.dark,fontWeight:700,fontFamily:font}}>Attributable cases by outcome</h3>
+                <SimpleBarChart data={Object.entries(results.cvd).map(([k,r])=>({name:HEALTH_OUTCOMES[k].shortName,value:r.cases,color:HEALTH_OUTCOMES[k].color}))} height={Math.max(120,Object.keys(results.cvd).length*46)}/>
+              </div>
+            )}
+            {/* DALY TABLE */}
+            <div style={cardStyle}>
+              <h3 style={{margin:"0 0 4px",fontSize:16,color:P.dark,fontWeight:700,fontFamily:font}}>
+                Disability-Adjusted Life Years (<span style={{color:P.terra}}>DALYs</span>)
+                <Tip text="DALYs combine years of life lost due to premature death and years lived with disability. One DALY represents one year of healthy life lost. CVD DALYs shown here include only years lived with disability (YLD); premature mortality (YLL) is not included and would increase CVD burden estimates substantially."/>
+              </h3>
+              <p style={{color:P.textLt,fontSize:13,margin:"0 0 12px",fontWeight:500}}>
+                Combines time lived with illness into a single burden measure. See notes below for CVD DALY methodology.
+              </p>
+              <table style={{width:"100%",borderCollapse:"collapse"}}>
+                <thead><tr style={{borderBottom:"2px solid "+P.inputBd}}>
+                  <th style={thStyle}>Outcome</th><th style={{...thStyle,textAlign:"right"}}>DALYs per year</th><th style={{...thStyle,textAlign:"right"}}>Range</th>
+                </tr></thead>
+                <tbody>
+                  {Object.entries(results.erf).map(([key,r])=>(
+                    <tr key={key} style={{borderBottom:"1px solid "+P.inputBd}}>
+                      <td style={{...tdStyle,fontWeight:700}}>{HEALTH_OUTCOMES[key].shortName}</td>
+                      <td style={{...tdStyle,textAlign:"right",fontWeight:800,color:P.terra}}>{fmt(r.dalys)}</td>
+                      <td style={{...tdStyle,textAlign:"right",color:P.textLt,fontSize:13}}>({fmt(r.dalysLow)} to {fmt(r.dalysHigh)})</td>
+                    </tr>
+                  ))}
+                  {Object.entries(results.cvd).map(([key,r])=>(
+                    <tr key={key} style={{borderBottom:"1px solid "+P.inputBd}}>
+                      <td style={{...tdStyle,fontWeight:700}}>{HEALTH_OUTCOMES[key].shortName} <span style={{fontSize:11,color:P.textLt}}>(YLD only)</span></td>
+                      <td style={{...tdStyle,textAlign:"right",fontWeight:800,color:P.terra}}>{fmt(r.dalys)}</td>
+                      <td style={{...tdStyle,textAlign:"right",color:P.textLt,fontSize:13}}>({fmt(r.dalysLow)} to {fmt(r.dalysHigh)})</td>
+                    </tr>
+                  ))}
+                  <tr style={{borderTop:"3px solid "+P.terra}}>
+                    <td style={{...tdStyle,fontWeight:800,color:P.terra,fontSize:15}}>Total</td>
+                    <td style={{...tdStyle,textAlign:"right",fontWeight:800,color:P.terra,fontSize:18}}>{fmt(results.totalDalys)}</td>
+                    <td style={{...tdStyle,textAlign:"right",color:P.textMd,fontSize:13,fontWeight:600}}>({fmt(results.totalDalysLow)} to {fmt(results.totalDalysHigh)})</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div style={{...disclaimerStyle,marginTop:12,fontSize:12}}>
+                <strong>CVD DALY methodology:</strong> Cardiovascular DALYs represent <strong>years lived with disability (YLD) only</strong> and do not include years of life lost from premature mortality (YLL). This provides a conservative lower bound.
+                {Object.entries(results.cvd).map(([key,r])=>(
+                  <span key={key}> {HEALTH_OUTCOMES[key].abbrev}: DW={r.dalyDW}, duration={r.dalyDuration}yr.</span>
+                ))}
+                {" "}Annoyance and sleep disturbance DALYs use WHO 2024 empirically derived disability weights with a 1-year prevalence-based approach. Range reflects disability weight uncertainty.
+              </div>
+            </div>
+            <div style={{...cardStyle,padding:"18px 24px",borderTop:"4px solid "+P.inputBd}}>
+              <h4 style={{fontSize:11,margin:"0 0 6px",fontWeight:700,color:P.textLt,textTransform:"uppercase",letterSpacing:"0.6px",fontFamily:font}}>Parameters used</h4>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,fontSize:13,color:P.textMd,fontWeight:500}}>
+                <div>Reference level: {effCF} dB Lden{effCF===53?" (WHO recommended)":" (custom)"}</div>
+                <div>Population: {fmt(population)}</div>
+                <div>Annoyance DW: 0.011 (WHO 2024)</div>
+                <div>Sleep disturbance DW: 0.009 (WHO 2024)</div>
+                <div>Lden\u2192Lnight offset: \u2212{lnightOffset} dB</div>
+                {Object.keys(customRates).length>0&&<div style={{gridColumn:"1/-1",color:P.terra,fontWeight:700}}>Custom baseline rates: {Object.keys(customRates).map(k=>HEALTH_OUTCOMES[k]?.shortName).join(", ")}</div>}
+              </div>
+            </div>
+            <div className="no-print" style={{display:"flex",justifyContent:"space-between",marginTop:4}}>
+              <button onClick={()=>goTo(2)} style={btnSecondary}>Modify inputs</button>
+              <div style={{display:"flex",gap:10}}>
+                <button onClick={()=>exportCSV(results,locLabel,population,effCF,outcomes)} style={btnSecondary}>Export CSV</button>
+                <button onClick={()=>{if(typeof window!=="undefined")window.print();}} style={btnSecondary}>Print / PDF</button>
+                <button onClick={()=>goTo(4)} style={btnPrimary}>Sensitivity Analysis</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ═══════ PAGE 4: SENSITIVITY ANALYSIS ═══════ */}
+        {step===4&&sens&&(
+          <div>
+            <div style={cardStyle}>
+              <SectionHeading accent="Sensitivity">Sensitivity Analysis</SectionHeading>
+              <p style={{color:P.textMd,fontSize:14,margin:"0 0 24px",fontWeight:500}}>
+                These analyses show how results change under different assumptions. The main results use recommended default values.
+              </p>
+              {/* IHD RR Sensitivity — NEW in v3.0 */}
+              {sens.rrScenarios.length>0&&(
+                <div style={{marginBottom:28}}>
+                  <h3 style={{fontSize:15,color:P.dark,margin:"0 0 10px",fontWeight:700,fontFamily:font}}>
+                    Effect of different <span style={{color:P.terra}}>IHD relative risk estimates</span>
+                    <Tip text="The IHD relative risk per 10 dB is the single most influential parameter. The WHO/van Kempen 2018 estimate of 1.08 has HIGH GRADE evidence quality and is legally codified in EU Directive 2020/367. Pershagen et al. 2025 found a lower overall estimate (1.017) but a higher low-bias subset estimate (1.026). This sensitivity analysis shows how the choice of estimate affects the number of attributable IHD cases."/>
+                  </h3>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
+                    <thead><tr style={{borderBottom:"2px solid "+P.inputBd}}>
+                      <th style={thStyle}>Source</th><th style={{...thStyle,textAlign:"right"}}>RR per 10 dB</th><th style={{...thStyle,textAlign:"right"}}>IHD cases</th><th style={{...thStyle,textAlign:"right"}}>95% CI</th>
+                    </tr></thead>
+                    <tbody>
+                      {sens.rrScenarios.map((row,i)=>(
+                        <tr key={i} style={{borderBottom:"1px solid "+P.inputBd,background:i===0?P.terra+"08":"transparent"}}>
+                          <td style={{...tdStyle,fontWeight:i===0?800:500,fontSize:13}}>{row.label} {i===0&&<span style={{fontSize:10,color:P.terra,fontWeight:700}}>(used)</span>}</td>
+                          <td style={{...tdStyle,textAlign:"right",fontWeight:700}}>{row.rr}</td>
+                          <td style={{...tdStyle,textAlign:"right",fontWeight:i===0?800:500}}>{fmt(row.cases)}</td>
+                          <td style={{...tdStyle,textAlign:"right",color:P.textLt,fontSize:13}}>({fmt(row.casesLow)} to {fmt(row.casesHigh)})</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p style={{fontSize:12,color:P.textLt,marginTop:8,fontWeight:500,lineHeight:1.55}}>
+                    The 4-fold difference in excess risk between WHO 2018 (RR 1.08) and Pershagen 2025 overall (RR 1.017) likely reflects differences in study inclusion criteria and exposure assessment precision. The tool defaults to 1.08 for regulatory comparability and because it has the only HIGH GRADE evidence rating.
+                  </p>
+                </div>
+              )}
+              {/* Counterfactual sensitivity */}
+              {sens.cfScenarios.length>0&&outcomes.some(k=>HEALTH_OUTCOMES[k].type==="incidence")&&(
+                <div style={{marginBottom:28}}>
+                  <h3 style={{fontSize:15,color:P.dark,margin:"0 0 10px",fontWeight:700,fontFamily:font}}>
+                    Effect of different <span style={{color:P.terra}}>reference noise levels</span>
+                    <Tip text="Lowering the reference level increases estimated burden because more of the population is considered exposed. A 5 dB decrease can approximately double the estimated attributable cases."/>
+                  </h3>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
+                    <thead><tr style={{borderBottom:"2px solid "+P.inputBd}}>
+                      <th style={thStyle}>Reference level</th>
+                      {outcomes.filter(k=>HEALTH_OUTCOMES[k].type==="incidence").map(k=>(<th key={k} style={{...thStyle,textAlign:"right"}}>{HEALTH_OUTCOMES[k].abbrev} cases</th>))}
+                      {outcomes.filter(k=>HEALTH_OUTCOMES[k].type==="incidence").map(k=>(<th key={k+"d"} style={{...thStyle,textAlign:"right"}}>{HEALTH_OUTCOMES[k].abbrev} DALYs</th>))}
+                    </tr></thead>
+                    <tbody>
+                      {sens.cfScenarios.map((row,i)=>(
+                        <tr key={i} style={{borderBottom:"1px solid "+P.inputBd,background:row.cf===effCF?P.terra+"08":"transparent"}}>
+                          <td style={{...tdStyle,fontWeight:row.cf===effCF?800:500}}>{row.label} {row.cf===effCF&&<span style={{fontSize:10,color:P.terra,fontWeight:700}}>(used)</span>}</td>
+                          {outcomes.filter(k=>HEALTH_OUTCOMES[k].type==="incidence").map(k=>(<td key={k} style={{...tdStyle,textAlign:"right",fontWeight:row.cf===effCF?800:500}}>{fmt(row[k+"_cases"])}</td>))}
+                          {outcomes.filter(k=>HEALTH_OUTCOMES[k].type==="incidence").map(k=>(<td key={k+"d"} style={{...tdStyle,textAlign:"right",fontWeight:row.cf===effCF?800:500,fontSize:13,color:P.textMd}}>{fmt(row[k+"_dalys"])}</td>))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {/* DW sensitivity */}
+              {sens.dwScenarios.length>0&&(
+                <div>
+                  <h3 style={{fontSize:15,color:P.dark,margin:"0 0 10px",fontWeight:700,fontFamily:font}}>
+                    Effect of different <span style={{color:P.terra}}>disability weight values</span> on DALYs
+                    <Tip text="Disability weights represent the severity of a health condition on a 0\u20131 scale. The choice of weight set has a major impact on DALY estimates, particularly for sleep disturbance (where weights differ 8-fold between 2011 and 2024)."/>
+                  </h3>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
+                    <thead><tr style={{borderBottom:"2px solid "+P.inputBd}}>
+                      <th style={thStyle}>Disability weight set</th>
+                      {sens.dwScenarios[0]?.ann_dalys!==undefined&&<th style={{...thStyle,textAlign:"right"}}>Annoyance DALYs</th>}
+                      {sens.dwScenarios[0]?.slp_dalys!==undefined&&<th style={{...thStyle,textAlign:"right"}}>Sleep DALYs</th>}
+                    </tr></thead>
+                    <tbody>
+                      {sens.dwScenarios.map((row,i)=>(
+                        <tr key={i} style={{borderBottom:"1px solid "+P.inputBd,background:i===0?P.terra+"08":"transparent"}}>
+                          <td style={{...tdStyle,fontWeight:i===0?800:500}}>{row.label} {i===0&&<span style={{fontSize:10,color:P.terra,fontWeight:700}}>(used)</span>}</td>
+                          {row.ann_dalys!==undefined&&<td style={{...tdStyle,textAlign:"right",fontWeight:i===0?800:500}}>{fmt(row.ann_dalys)}</td>}
+                          {row.slp_dalys!==undefined&&<td style={{...tdStyle,textAlign:"right",fontWeight:i===0?800:500}}>{fmt(row.slp_dalys)}</td>}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <p style={{fontSize:12,color:P.textLt,marginTop:8,fontWeight:500,lineHeight:1.55}}>
+                    WHO 2024 weights are empirically derived and recommended for new assessments. Legacy 2011 weights are shown for comparison with older published studies. Note: switching from 2011 to 2024 weights reduces annoyance DALYs by approximately 45% and sleep disturbance DALYs by approximately 87%.
+                  </p>
+                </div>
+              )}
+            </div>
+            <div className="no-print" style={{display:"flex",justifyContent:"space-between"}}>
+              <button onClick={()=>goTo(3)} style={btnSecondary}>Main Results</button>
+              <button onClick={()=>goTo(5)} style={btnPrimary}>Methods</button>
+            </div>
+          </div>
+        )}
+
+        {/* ═══════ PAGE 5: METHODS ═══════ */}
+        {step===5&&(
+          <div>
+            <div style={cardStyle}>
+              <SectionHeading accent="Methods">Methods and References</SectionHeading>
+              <p style={{color:P.textMd,fontSize:14,margin:"0 0 28px",fontWeight:500}}>
+                Complete description of the calculation methodology, dose-response evidence, and limitations.
+              </p>
+              {/* Steps */}
+              <div style={{marginBottom:28}}>
+                <h3 style={{fontSize:15,margin:"0 0 12px",fontWeight:700,color:P.dark,fontFamily:font}}>Calculation steps</h3>
+                <div style={{display:"flex",gap:0,alignItems:"stretch"}}>
+                  {[
+                    {n:"1",t:"Exposure data",d:"Population distribution across noise level bands (dB Lden)"},
+                    {n:"2",t:"Dose-response",d:"Apply relative risks or exposure-response functions from meta-analyses"},
+                    {n:"3",t:"Health burden",d:"Calculate attributable cases using the Population Attributable Fraction"},
+                    {n:"4",t:"DALYs",d:"Estimate years lived with disability using WHO disability weights"},
+                  ].map((s,i)=>(
+                    <div key={i} style={{flex:1,display:"flex",alignItems:"stretch"}}>
+                      <div style={{padding:"14px 16px",background:P.terra+"08",borderRadius:4,border:"1px solid "+P.terra+"18",flex:1}}>
+                        <div style={{fontSize:11,fontWeight:800,color:P.terra,fontFamily:font}}>Step {s.n}</div>
+                        <div style={{fontSize:14,fontWeight:700,color:P.dark,marginTop:2,fontFamily:font}}>{s.t}</div>
+                        <div style={{fontSize:12,color:P.textMd,marginTop:4,lineHeight:1.45,fontWeight:500}}>{s.d}</div>
+                      </div>
+                      {i<3&&<div style={{display:"flex",alignItems:"center",padding:"0 6px",color:P.gold,fontSize:18,fontWeight:700}}>{"\u2192"}</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {/* PAF formula */}
+              <div style={{marginBottom:28}}>
+                <h3 style={{fontSize:15,margin:"0 0 8px",fontWeight:700,color:P.dark,fontFamily:font}}>
+                  Cardiovascular outcomes: <span style={{color:P.terra}}>Population Attributable Fraction</span> method
+                </h3>
+                <p style={{fontSize:14,color:P.textMd,lineHeight:1.65,marginBottom:10,fontWeight:500}}>
+                  For cardiovascular diseases, the tool applies a relative risk per 10 dB increase from meta-analyses. For each noise band, it calculates the excess risk relative to the reference level, combines these across the population, and multiplies by the baseline disease rate.
+                </p>
+                <div style={{background:P.cream,padding:"14px 18px",borderRadius:4,fontFamily:"'Courier New',monospace",fontSize:13,color:P.dark,border:"1px solid "+P.inputBd}}>
+                  {"RR(Lden) = RR_per10dB ^ ((Lden_midpoint \u2212 counterfactual) / 10)"}<br/>
+                  {"PAF = \u03a3[P\u1d62 \u00d7 (RR\u1d62 \u2212 1)] / (\u03a3[P\u1d62 \u00d7 (RR\u1d62 \u2212 1)] + 1)"}<br/>
+                  {"Attributable Cases = PAF \u00d7 Baseline Rate \u00d7 Population / 100,000"}
+                </div>
+                <p style={{fontSize:12,color:P.textLt,marginTop:8,fontWeight:500}}>
+                  Only noise bands with midpoints above the counterfactual (default: 53 dB Lden) contribute to the PAF. Noise band midpoints: 47, 52, 57, 62, 67, 72, and 77 dB Lden.
+                </p>
+              </div>
+              {/* ERF formula */}
+              <div style={{marginBottom:28}}>
+                <h3 style={{fontSize:15,margin:"0 0 8px",fontWeight:700,color:P.dark,fontFamily:font}}>
+                  Annoyance and sleep disturbance: <span style={{color:P.terra}}>exposure-response function</span> method
+                </h3>
+                <p style={{fontSize:14,color:P.textMd,lineHeight:1.65,marginBottom:10,fontWeight:500}}>
+                  Polynomial functions directly estimate the percentage of people affected at each noise level. No baseline disease rates are needed.
+                </p>
+                <div style={{background:P.cream,padding:"14px 18px",borderRadius:4,fontFamily:"'Courier New',monospace",fontSize:13,color:P.dark,border:"1px solid "+P.inputBd}}>
+                  {"% Highly Annoyed = 78.9270 \u2212 3.1162 \u00d7 Lden + 0.0342 \u00d7 Lden\u00b2"}<br/>
+                  {"  Source: Guski et al. 2017 (WHO 2018); valid 45\u201375 dB Lden"}<br/><br/>
+                  {"% Highly Sleep Disturbed = 20.8 \u2212 1.05 \u00d7 Lnight + 0.01486 \u00d7 Lnight\u00b2"}<br/>
+                  {"  Source: Miedema & Vos 2007; valid 40\u201365 dB Lnight"}
+                </div>
+              </div>
+              {/* Curves */}
+              <div style={{marginBottom:28}}>
+                <h3 style={{fontSize:15,margin:"0 0 8px",fontWeight:700,color:P.dark,fontFamily:font}}>
+                  Annoyance and sleep disturbance <span style={{color:P.terra}}>dose-response curves</span>
+                </h3>
+                <SimpleLineChart
+                  xMin={40} xMax={80} yMin={0} yMax={45} xLabel="Noise level (dB)" yLabel="% affected"
+                  series={[
+                    {name:"% Highly Annoyed (Lden)",color:P.gold,data:Array.from({length:36},(_,i)=>({x:45+i,y:calcPercentHA(45+i)}))},
+                    {name:"% Highly Sleep Disturbed (Lnight)",color:"#4a3728",data:Array.from({length:26},(_,i)=>({x:40+i,y:calcPercentHSD(40+i)}))},
+                  ]}/>
+              </div>
+              {/* CVD Curves */}
+              <div style={{marginBottom:28}}>
+                <h3 style={{fontSize:15,margin:"0 0 8px",fontWeight:700,color:P.dark,fontFamily:font}}>Cardiovascular <span style={{color:P.terra}}>dose-response curves</span></h3>
+                <p style={{fontSize:13,color:P.textMd,marginBottom:10,fontWeight:500}}>Relative risk by noise level (Lden), reference level 53 dB.</p>
+                <SimpleLineChart
+                  xMin={50} xMax={77} yMin={1.0} yMax={1.22} xLabel="Noise level, Lden (dB)" yLabel="Relative Risk" yDecimals={2}
+                  series={[
+                    {name:"IHD (RR 1.08/10dB)",color:P.terra,data:cvdCurveData.map(d=>({x:d.db,y:d.ihd}))},
+                    {name:"Heart Failure (RR 1.04/10dB)",color:P.gold,data:cvdCurveData.map(d=>({x:d.db,y:d.hf}))},
+                    {name:"Stroke (RR 1.025/10dB)",color:"#6b4c3b",data:cvdCurveData.map(d=>({x:d.db,y:d.stroke}))},
+                  ]}/>
+              </div>
+              {/* Evidence table */}
+              <div style={{marginBottom:28}}>
+                <h3 style={{fontSize:15,margin:"0 0 8px",fontWeight:700,color:P.dark,fontFamily:font}}>Dose-response evidence</h3>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                  <thead><tr style={{borderBottom:"2px solid "+P.inputBd}}>
+                    <th style={thStyle}>Outcome</th><th style={thStyle}>Effect estimate</th><th style={thStyle}>Source</th>
+                  </tr></thead>
+                  <tbody>
+                    {Object.entries(HEALTH_OUTCOMES).map(([key,o])=>(
+                      <tr key={key} style={{borderBottom:"1px solid "+P.inputBd}}>
+                        <td style={{...tdStyle,fontWeight:700,fontSize:13}}>{o.shortName}</td>
+                        <td style={{...tdStyle,fontSize:13}}>{o.type==="incidence"?"RR "+o.rrPer10dB+" ("+o.rrLow+"\u2013"+o.rrHigh+") per 10 dB":"Polynomial function"}</td>
+                        <td style={{...tdStyle,color:P.textLt,fontSize:12}}>{o.source}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {/* DALY methodology */}
+              <div style={{marginBottom:28}}>
+                <h3 style={{fontSize:15,margin:"0 0 8px",fontWeight:700,color:P.dark,fontFamily:font}}>DALY calculation methodology</h3>
+                <div style={{fontSize:14,color:P.textMd,lineHeight:1.7,fontWeight:500}}>
+                  <p style={{margin:"0 0 8px"}}>
+                    <strong>Annoyance and sleep disturbance DALYs:</strong> Calculated as number of affected persons multiplied by the disability weight, using a prevalence-based approach with a 1-year duration. Default disability weights are from the WHO 2024 empirical study (Charalampous et al. BMJ Public Health 2024;2(1):e000470): 0.011 for severe annoyance, 0.009 for sleep disturbance.
+                  </p>
+                  <p style={{margin:"0 0 8px"}}>
+                    <strong>Cardiovascular DALYs:</strong> Calculated as attributable incident cases multiplied by an outcome-specific disability weight and average duration. These represent <strong>YLD only</strong> (years lived with disability). Years of life lost from premature mortality (YLL) are not included in this version; CVD DALY estimates should therefore be interpreted as conservative lower bounds.
+                  </p>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,marginTop:8}}>
+                    <thead><tr style={{borderBottom:"1px solid "+P.inputBd}}>
+                      <th style={{...thStyle,fontSize:10}}>CVD Outcome</th><th style={{...thStyle,fontSize:10}}>DW</th><th style={{...thStyle,fontSize:10}}>Duration</th><th style={{...thStyle,fontSize:10}}>Basis</th>
+                    </tr></thead>
+                    <tbody>
+                      {["ihd","stroke","hf"].map(k=>{const o=HEALTH_OUTCOMES[k];return o?(
+                        <tr key={k} style={{borderBottom:"1px solid "+P.inputBd}}>
+                          <td style={{padding:"6px 12px",fontWeight:600}}>{o.shortName}</td>
+                          <td style={{padding:"6px 12px"}}>{o.dalyDW}</td>
+                          <td style={{padding:"6px 12px"}}>{o.dalyDuration} yr</td>
+                          <td style={{padding:"6px 12px",color:P.textLt,fontSize:11}}>{o.dalyDWNote}</td>
+                        </tr>
+                      ):null;})}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              {/* Limitations */}
+              <div>
+                <h3 style={{fontSize:15,margin:"0 0 8px",fontWeight:700,color:P.dark,fontFamily:font}}>Limitations</h3>
+                <div style={{fontSize:14,color:P.textMd,lineHeight:1.7,fontWeight:500}}>
+                  <p style={{margin:"0 0 8px"}}>The dose-response functions are derived primarily from European populations. Their applicability to other regions, particularly low- and middle-income countries with different traffic patterns, housing types, and cultural noise sensitivities, has not been fully established.</p>
+                  <p style={{margin:"0 0 8px"}}>Most underlying cardiovascular studies did not fully adjust for air pollution co-exposure. Although available evidence suggests the noise effect is largely independent of air pollution, some residual confounding cannot be excluded.</p>
+                  <p style={{margin:"0 0 8px"}}>Cardiovascular DALYs represent YLD only and substantially underestimate the full disease burden because they exclude premature mortality (YLL). The EEA estimates approximately 12,000 premature deaths per year in Europe from road traffic noise.</p>
+                  <p style={{margin:"0 0 8px"}}>The quality of noise exposure data varies considerably. Strategic noise maps produced under the EU Environmental Noise Directive use standardized methods, but maps from other contexts may differ substantially.</p>
+                  <p style={{margin:"0 0 8px"}}>When Lnight data are not directly available, the tool converts from Lden using a fixed offset (default: \u22129 dB). The actual relationship depends on local traffic temporal patterns and may introduce error.</p>
+                  <p style={{margin:0}}>This tool covers road traffic noise only. Health impacts from railway, aircraft, and industrial noise require separate assessment with source-specific dose-response functions.</p>
+                </div>
+              </div>
+            </div>
+            {/* References */}
+            <div style={cardStyle}>
+              <h3 style={{fontSize:15,margin:"0 0 12px",fontWeight:700,color:P.dark,fontFamily:font}}>Key references</h3>
+              <div style={{fontSize:13,color:P.textMd,lineHeight:1.8,fontWeight:500}}>
+                <p style={{margin:"0 0 4px"}}>1. van Kempen E, Casas M, Pershagen G, Foraster M. WHO Environmental Noise Guidelines for the European Region: A Systematic Review on Environmental Noise and Cardiovascular and Metabolic Effects. <em>Int J Environ Res Public Health.</em> 2018;15(2):379.</p>
+                <p style={{margin:"0 0 4px"}}>2. Babisch W. Updated exposure-response relationship between road traffic noise and coronary heart diseases: A meta-analysis. <em>Noise Health.</em> 2014;16(68):1\u20139.</p>
+                <p style={{margin:"0 0 4px"}}>3. Pershagen G, Pyko A, Aasvang GM, et al. Road traffic noise and incident ischemic heart disease, myocardial infarction, and stroke: A systematic review and meta-analysis. <em>Environ Epidemiol.</em> 2025;9(3):e400.</p>
+                <p style={{margin:"0 0 4px"}}>4. S\u00f8rensen M, Pershagen G, Thacher JD, et al. Health position paper and redox perspectives \u2014 Disease burden by transportation noise. <em>Redox Biol.</em> 2024;69:102995.</p>
+                <p style={{margin:"0 0 4px"}}>5. Guski R, Schreckenberg D, Schuemer R. WHO Environmental Noise Guidelines for the European Region: A Systematic Review on Environmental Noise and Annoyance. <em>Int J Environ Res Public Health.</em> 2017;14(12):1539.</p>
+                <p style={{margin:"0 0 4px"}}>6. Miedema HME, Vos H. Associations between self-reported sleep disturbance and environmental noise based on reanalyses of pooled data from 24 studies. <em>Behav Sleep Med.</em> 2007;5(1):1\u201320.</p>
+                <p style={{margin:"0 0 4px"}}>7. Basner M, McGuire S. WHO Environmental Noise Guidelines for the European Region: A Systematic Review on Environmental Noise and Effects on Sleep. <em>Int J Environ Res Public Health.</em> 2018;15(3):519.</p>
+                <p style={{margin:"0 0 4px"}}>8. Charalampous P, Maas CCHM, Haagsma JA. Disability weights for environmental noise-related health states. <em>BMJ Public Health.</em> 2024;2(1):e000470.</p>
+                <p style={{margin:"0 0 4px"}}>9. World Health Organization. <em>Environmental Noise Guidelines for the European Region.</em> Copenhagen: WHO; 2018. ISBN 978-92-890-5356-3.</p>
+                <p style={{margin:"0 0 4px"}}>10. Fritschi L, Brown L, Kim R, Schwela D, Kephalopoulos S. <em>Burden of Disease from Environmental Noise.</em> Copenhagen: WHO; 2011. ISBN 978-92-890-0229-5.</p>
+                <p style={{margin:0}}>11. Commission Delegated Directive (EU) 2020/367 amending Annex III to Directive 2002/49/EC. <em>Official Journal of the European Union.</em> 2020;L 67:132\u2013138.</p>
+              </div>
+            </div>
+
+            <div style={disclaimerStyle}>
+              <strong>Citation:</strong> Rojas-Rueda D. NoiseQ+: Road Traffic Noise Health Impact Assessment Tool, version 3.0. Colorado State University; 2026. Available at: https://github.com/drojas-rueda/noiseq-plus
+            </div>
+            <div className="no-print" style={{display:"flex",justifyContent:"space-between",marginTop:20}}>
+              <button onClick={()=>goTo(4)} style={btnSecondary}>Sensitivity Analysis</button>
+              <button onClick={()=>goTo(3)} style={btnPrimary}>Back to Results</button>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* FOOTER */}
+      <footer style={{padding:"20px 36px",textAlign:"center",fontSize:12,color:P.textLt,borderTop:"1px solid "+P.inputBd,background:P.white,fontWeight:500,fontFamily:font}}>
+        {"NoiseQ+ v3.0 \u00b7 David Rojas-Rueda \u00b7 Colorado State University \u00b7 2026"}
+      </footer>
+    </div>
+  );
+}
+
+ReactDOM.render(React.createElement(NoiseQPlus),document.getElementById("root"));
+</script>
+</body>
+</html>
