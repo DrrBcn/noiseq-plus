@@ -65,20 +65,28 @@ function SimpleLineChart({series,xMin,xMax,yMin,yMax,width=620,height=260,xLabel
       // lines
       series.map((s,si)=>{
         const pts=s.data.map(d=>sx(d.x)+","+sy(d.y)).join(" ");
-        return React.createElement("g",{key:si},
-          React.createElement("polyline",{points:pts,fill:"none",stroke:s.color,strokeWidth:2.5}),
-          // legend
-          React.createElement("line",{x1:pad.l+si*200,x2:pad.l+si*200+20,y1:14,y2:14,stroke:s.color,strokeWidth:2.5}),
-          React.createElement("text",{x:pad.l+si*200+25,y:18,fontSize:11,fill:P.dark,fontWeight:600},s.name)
-        );
-      })
+        return React.createElement("polyline",{key:"ln"+si,points:pts,fill:"none",stroke:s.color,strokeWidth:2.5});
+      }),
+      // legend (lays out left to right, wraps to a second row if it would overflow)
+      (()=>{
+        const items=[];let lx=pad.l,ly=12;
+        series.forEach((s,si)=>{
+          const itemW=20+6+s.name.length*6.2+18;
+          if(si>0&&lx+itemW>width-pad.r){lx=pad.l;ly+=16;}
+          items.push(React.createElement("line",{key:"lg"+si,x1:lx,x2:lx+20,y1:ly,y2:ly,stroke:s.color,strokeWidth:2.5}));
+          items.push(React.createElement("text",{key:"lt"+si,x:lx+25,y:ly+4,fontSize:11,fill:P.dark,fontWeight:600},s.name));
+          lx+=itemW;
+        });
+        return items;
+      })()
     )
   );
 }
 
 // ================================================================
-// NOISEQ+ v3.0 — CALCULATION ENGINE
-// Peer-reviewed update: all critical/important fixes applied
+// NOISEQ+ v4.0 — CALCULATION ENGINE
+// Aligned with Rojas-Rueda 2026, Environmental Research (DOI 10.1016/j.envres.2026.124921)
+// Adds: CVD mortality (YLL), type 2 diabetes, Smith 2022 sleep ERF
 // ================================================================
 
 const NOISE_BANDS=[
@@ -100,7 +108,7 @@ const HEALTH_OUTCOMES={
     biSource:"GBD 2021 global age-standardized estimate",
     ageGroup:"Adults aged 30 years and older",gradeRating:"High",
     color:"#7a3a23",
-    description:"Includes angina, coronary artery disease, and heart attack. This is the cardiovascular outcome with the strongest evidence for noise effects.",
+    description:"Includes angina, coronary artery disease, and heart attack. This is the cardiovascular outcome with the strongest evidence for noise effects (only GRADE HIGH estimate).",
     dalyDW:0.08,dalyDWNote:"Severity-weighted average across mild (DW 0.033), moderate (0.072), and acute (0.432) IHD states",
     dalyDuration:5,dalyDurNote:"Average duration of incident IHD morbidity episode",
   },
@@ -109,24 +117,48 @@ const HEALTH_OUTCOMES={
     rrPer10dB:1.025,rrLow:1.009,rrHigh:1.041,
     source:"Pershagen et al. 2025 (Environ Epidemiol 9(3):e400)",
     type:"incidence",metric:"Lden",threshold:53,defaultBI:215,
-    biSource:"GBD 2021 global age-standardized estimate",
+    biSource:"GBD 2021 global age-standardized estimate (all-stroke). For ischemic-specific analysis, enter an ischemic stroke rate.",
     ageGroup:"Adults aged 30 years and older",gradeRating:"Moderate",
     color:"#6b4c3b",
-    description:"Includes both ischemic and hemorrhagic stroke.",
+    description:"Relative risk pooled from the ischemic and total stroke outcomes in Pershagen et al. 2025. The published US assessment applied this risk to ischemic stroke incidence.",
     dalyDW:0.07,dalyDWNote:"Weighted average across mild long-term (DW 0.031) and moderate/severe stroke states",
     dalyDuration:4,dalyDurNote:"Average duration accounting for case fatality and recovery",
   },
   hf:{
     name:"Heart Failure",shortName:"Heart Failure",abbrev:"HF",
     rrPer10dB:1.04,rrLow:1.02,rrHigh:1.07,
-    source:"S\u00f8rensen et al. 2024, Redox Biology 69:102995 (Umbrella+ Review)",
+    source:"Engelmann et al. 2023 (ETC/HE Report 2023/11, Umbrella+ review)",
     type:"incidence",metric:"Lden",threshold:53,defaultBI:190,
-    biSource:"GBD 2021 global age-standardized estimate",
+    biSource:"GBD 2021 global age-standardized estimate. The published US assessment used cardiomyopathy incidence as a conservative proxy.",
     ageGroup:"Adults aged 30 years and older",gradeRating:"Moderate",
     color:"#c28459",
-    description:"A condition where the heart cannot pump blood efficiently enough to meet the body\u2019s needs.",
+    description:"A condition where the heart cannot pump blood efficiently enough to meet the body\u2019s needs. The relative risk is drawn from the Umbrella+ review of prospective cohort studies.",
     dalyDW:0.05,dalyDWNote:"Weighted average across mild (DW 0.041) and moderate (0.072) heart failure",
     dalyDuration:6,dalyDurNote:"Average duration reflecting chronic progressive course",
+  },
+  t2dm:{
+    name:"Type 2 Diabetes",shortName:"Type 2 Diabetes",abbrev:"T2DM",
+    rrPer10dB:1.07,rrLow:1.05,rrHigh:1.08,
+    source:"Vienneau et al. 2024 (Environ Health 23(1):46)",
+    type:"incidence",metric:"Lden",threshold:53,defaultBI:735,
+    biSource:"US national mean, GBD 2023 (approximate). Replace with a local diabetes incidence rate.",
+    ageGroup:"Adults aged 30 years and older",gradeRating:"Moderate",
+    color:"#9c6b3f",
+    description:"Incident type 2 diabetes mellitus. Updated meta-analysis pooling 14 estimates from 13 studies of road traffic noise and diabetes.",
+    dalyDW:0.05,dalyDWNote:"GBD severity-weighted disability weight for type 2 diabetes",
+    dalyDuration:10,dalyDurNote:"Average duration of diabetes morbidity used in the assessment",
+  },
+  cvdmort:{
+    name:"Cardiovascular Mortality",shortName:"Cardiovascular Mortality",abbrev:"CVD mortality",
+    rrPer10dB:1.05,rrLow:1.02,rrHigh:1.07,
+    source:"Munzel et al. 2024 (Circ Res 134:1113\u20131135)",
+    type:"incidence",metric:"Lden",threshold:53,defaultBI:480,
+    biSource:"CVD mortality rate; US national mean, GBD 2023 (approximate). Replace with a local CVD mortality rate.",
+    ageGroup:"Adults aged 30 years and older",gradeRating:"Moderate",
+    color:"#5a2a18",
+    description:"Premature cardiovascular deaths attributable to noise. This outcome contributes years of life lost (YLL), not years lived with disability.",
+    mortality:true,remainingLE:14.5,
+    dalyDWNote:"YLL = attributable deaths \u00d7 remaining life expectancy at the average age of CVD death (14.5 years)",
   },
   annoyance:{
     name:"High Annoyance",shortName:"High Annoyance",abbrev:"HA",
@@ -140,8 +172,8 @@ const HEALTH_OUTCOMES={
   sleep:{
     name:"High Sleep Disturbance",shortName:"High Sleep Disturbance",abbrev:"HSD",
     type:"erf",metric:"Lnight",threshold:40,
-    dw:0.009,dwLow:0.005,dwHigh:0.07,
-    source:"Miedema & Vos 2007 (Behav Sleep Med 5(1):1\u201320; adopted in EU Directive 2020/367)",
+    dw:0.010,dwLow:0.006,dwHigh:0.07,
+    source:"Smith et al. 2022 (Environ Health Perspect 130(7):076001); updates Basner & McGuire 2018",
     ageGroup:"Adults aged 18 years and older",gradeRating:"Moderate",
     color:"#4a3728",
     description:"Significant noise-induced sleep disruption, including difficulty falling asleep, awakenings, and reduced sleep quality.",
@@ -149,7 +181,7 @@ const HEALTH_OUTCOMES={
 };
 
 const DW_PRESETS={
-  who2024:{label:"WHO 2024 (Recommended)",annDw:0.011,slpDw:0.009,note:"Empirically derived from 4,056 respondents using standardized GBD paired-comparison methods (Charalampous et al. 2024, BMJ Public Health 2(1):e000470)"},
+  who2024:{label:"WHO 2024 (Recommended)",annDw:0.011,slpDw:0.010,note:"Empirically derived from 4,056 respondents using standardized GBD paired-comparison methods (Charalampous et al. 2024, BMJ Public Health 2(1):e000470)"},
   rivm2018:{label:"RIVM 2018 (Revised)",annDw:0.01,slpDw:0.0175,note:"European Commission-commissioned update (van Kamp et al. RIVM Report 2018-0121)"},
   who2011:{label:"WHO/JRC 2011 (Legacy)",annDw:0.02,slpDw:0.07,note:"Original expert-based values (Fritschi et al. 2011, WHO ISBN 978-92-890-0229-5). Used in most published studies before 2024"},
 };
@@ -163,15 +195,15 @@ function calcPercentHA(lden){
   const x=Math.min(lden,75);
   return Math.max(0,78.9270-3.1162*x+0.0342*x*x);
 }
-// %HSD: Miedema & Vos 2007, adopted in WHO/JRC 2011 and EU Directive 2020/367
+// %HSD: Smith et al. 2022 — updates Basner & McGuire 2018 (WHO) with 11 additional studies (36 total)
 function calcPercentHSD(lnight){
   if(lnight<40)return 0;
   const x=Math.min(lnight,65);
-  return Math.max(0,20.8-1.05*x+0.01486*x*x);
+  return Math.max(0,31.18323-1.47351*x+0.01851*x*x);
 }
 function ldenToLnight(lden,offset){return lden-(offset||9);}
 
-// ── PAF calculation ──
+// ── PAF calculation (returns YLD for morbidity, YLL for mortality outcomes) ──
 function calculatePAF(exposureDist,totalPop,outcomeKey,counterfactual,baselineRate){
   const o=HEALTH_OUTCOMES[outcomeKey];
   let totalPropExposed=0;
@@ -192,20 +224,23 @@ function calculatePAF(exposureDist,totalPop,outcomeKey,counterfactual,baselineRa
   const central=calcCases(o.rrPer10dB);
   const low=calcCases(o.rrLow);
   const high=calcCases(o.rrHigh);
-  // Outcome-specific CVD DALY (YLD only)
+  const isMort=!!o.mortality;
   const dw=o.dalyDW||0.08;
   const dur=o.dalyDuration||5;
+  const le=o.remainingLE||14.5;
+  const toDalys=(c)=>isMort?c*le:c*dw*dur; // YLL for mortality, YLD for morbidity
   return{
     paf:Math.round(central.paf*10000)/100,
     cases:Math.round(central.cases*10)/10,
     casesLow:Math.round(low.cases*10)/10,
     casesHigh:Math.round(high.cases*10)/10,
     rate:Math.round(central.cases/totalPop*100000*10)/10,
-    dalys:Math.round(central.cases*dw*dur),
-    dalysLow:Math.round(low.cases*dw*dur),
-    dalysHigh:Math.round(high.cases*dw*dur),
+    dalys:Math.round(toDalys(central.cases)),
+    dalysLow:Math.round(toDalys(low.cases)),
+    dalysHigh:Math.round(toDalys(high.cases)),
     exposedProp:totalPropExposed*100,
-    dalyDW:dw,dalyDuration:dur,
+    isMortality:isMort,
+    dalyDW:isMort?null:dw,dalyDuration:isMort?null:dur,remainingLE:isMort?le:null,
   };
 }
 
@@ -279,7 +314,7 @@ function runSensitivity(dist,pop,outcomes,cf,rates,lnOffset){
     const biRate=rates.ihd||HEALTH_OUTCOMES.ihd.defaultBI;
     [{label:"WHO/van Kempen 2018 (default)",rr:1.08,rrL:1.01,rrH:1.15},
      {label:"Pershagen 2025 (overall)",rr:1.017,rrL:0.990,rrH:1.044},
-     {label:"Pershagen 2025 (low-bias)",rr:1.026,rrL:1.009,rrH:1.044},
+     {label:"Pershagen 2025 (MI-specific)",rr:1.029,rrL:1.011,rrH:1.048},
      {label:"Babisch 2014 (LDN metric)",rr:1.08,rrL:1.04,rrH:1.13},
     ].forEach(sc=>{
       let s=0;
@@ -307,24 +342,26 @@ function runSensitivity(dist,pop,outcomes,cf,rates,lnOffset){
 
 // ── CSV Export ──
 function exportCSV(results,locLabel,population,effCF,outcomes){
-  let csv="NoiseQ+ v3.0 Results Export\n";
+  let csv="NoiseQ+ v4.0 Results Export\n";
   csv+="Location,"+locLabel+"\n";
   csv+="Population,"+population+"\n";
   csv+="Reference level (dB Lden),"+effCF+"\n\n";
-  csv+="Outcome,Metric,Cases/Affected,Lower CI,Upper CI,Rate per 100k,PAF %,DALYs,DALYs Lower,DALYs Upper\n";
+  csv+="Outcome,Metric,Cases/Affected,Lower CI,Upper CI,Rate per 100k,PAF %,DALYs,DALYs Lower,DALYs Upper,Component\n";
   if(results.cvd){
     Object.entries(results.cvd).forEach(([k,r])=>{
-      csv+=HEALTH_OUTCOMES[k].shortName+",Attributable cases/yr,"+r.cases+","+r.casesLow+","+r.casesHigh+","+r.rate+","+r.paf+","+r.dalys+","+r.dalysLow+","+r.dalysHigh+"\n";
+      csv+=HEALTH_OUTCOMES[k].shortName+","+(r.isMortality?"Attributable deaths/yr":"Attributable cases/yr")+","+r.cases+","+r.casesLow+","+r.casesHigh+","+r.rate+","+r.paf+","+r.dalys+","+r.dalysLow+","+r.dalysHigh+","+(r.isMortality?"YLL":"YLD")+"\n";
     });
   }
   if(results.erf){
     Object.entries(results.erf).forEach(([k,r])=>{
-      csv+=HEALTH_OUTCOMES[k].shortName+",People affected,"+r.totalAffected+",,,"+r.percentAffected+"%,,"+r.dalys+","+r.dalysLow+","+r.dalysHigh+"\n";
+      csv+=HEALTH_OUTCOMES[k].shortName+",People affected,"+r.totalAffected+",,,"+r.percentAffected+"%,,"+r.dalys+","+r.dalysLow+","+r.dalysHigh+",YLD\n";
     });
   }
-  csv+="\nTotal DALYs,"+results.totalDalys+","+results.totalDalysLow+","+results.totalDalysHigh+"\n";
-  csv+="\nNote: CVD DALYs represent YLD only (years lived with disability). YLL from premature mortality is not included.\n";
-  csv+="Generated by NoiseQ+ v3.0 | David Rojas-Rueda | Colorado State University | 2026\n";
+  csv+="\nTotal YLD,"+results.totalYLD+"\n";
+  csv+="Total YLL,"+results.totalYLL+"\n";
+  csv+="Total DALYs,"+results.totalDalys+","+results.totalDalysLow+","+results.totalDalysHigh+"\n";
+  csv+="\nNote: Morbidity outcomes contribute YLD. Cardiovascular mortality contributes YLL (deaths x 14.5 years remaining life expectancy).\n";
+  csv+="Generated by NoiseQ+ v4.0 | David Rojas-Rueda | Colorado State University | 2026\n";
   const blob=new Blob([csv],{type:"text/csv"});
   const a=document.createElement("a");
   a.href=URL.createObjectURL(blob);
@@ -394,7 +431,7 @@ function NoiseQPlus(){
   const[dist,setDist]=useState({b1:15,b2:25,b3:28,b4:18,b5:9,b6:4,b7:1});
   const[simpThr,setSimpThr]=useState(55);
   const[simpPct,setSimpPct]=useState(60);
-  const[outcomes,setOutcomes]=useState(["ihd","stroke","annoyance","sleep"]);
+  const[outcomes,setOutcomes]=useState(["ihd","stroke","cvdmort","t2dm","annoyance","sleep"]);
   const[useCustomCF,setUseCustomCF]=useState(false);
   const[customCF,setCustomCF]=useState(53);
   const[customRates,setCustomRates]=useState({});
@@ -415,10 +452,10 @@ function NoiseQPlus(){
       if(o.type==="incidence")cvd[k]=calculatePAF(effDist,population,k,effCF,customRates[k]||o.defaultBI);
       else erf[k]=calculateERF(effDist,population,k,null,lnightOffset);
     });
-    let totalDalys=0,totalDalysLow=0,totalDalysHigh=0;
-    Object.values(cvd).forEach(r=>{totalDalys+=r.dalys;totalDalysLow+=r.dalysLow;totalDalysHigh+=r.dalysHigh;});
-    Object.values(erf).forEach(r=>{totalDalys+=r.dalys;totalDalysLow+=r.dalysLow;totalDalysHigh+=r.dalysHigh;});
-    return{cvd,erf,totalDalys,totalDalysLow,totalDalysHigh};
+    let totalDalys=0,totalDalysLow=0,totalDalysHigh=0,totalYLD=0,totalYLL=0;
+    Object.values(cvd).forEach(r=>{totalDalys+=r.dalys;totalDalysLow+=r.dalysLow;totalDalysHigh+=r.dalysHigh;if(r.isMortality)totalYLL+=r.dalys;else totalYLD+=r.dalys;});
+    Object.values(erf).forEach(r=>{totalDalys+=r.dalys;totalDalysLow+=r.dalysLow;totalDalysHigh+=r.dalysHigh;totalYLD+=r.dalys;});
+    return{cvd,erf,totalDalys,totalDalysLow,totalDalysHigh,totalYLD,totalYLL};
   },[step,outcomes,effDist,population,effCF,customRates,lnightOffset]);
 
   const sens=useMemo(()=>{
@@ -430,7 +467,12 @@ function NoiseQPlus(){
   const cvdCurveData=useMemo(()=>{
     return Array.from({length:28},(_,i)=>{
       const db=50+i;
-      return{db,ihd:db>53?Math.pow(1.08,(db-53)/10):1,stroke:db>53?Math.pow(1.025,(db-53)/10):1,hf:db>53?Math.pow(1.04,(db-53)/10):1};
+      return{db,
+        ihd:db>53?Math.pow(1.08,(db-53)/10):1,
+        stroke:db>53?Math.pow(1.025,(db-53)/10):1,
+        hf:db>53?Math.pow(1.04,(db-53)/10):1,
+        t2dm:db>53?Math.pow(1.07,(db-53)/10):1,
+        cvdmort:db>53?Math.pow(1.05,(db-53)/10):1};
     });
   },[]);
 
@@ -444,7 +486,7 @@ function NoiseQPlus(){
       <header style={{background:P.dark,padding:"18px 36px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
         <Logo size={26}/>
         <div style={{fontSize:12,color:"rgba(255,255,255,0.5)",textAlign:"right",fontWeight:500,fontFamily:font}}>
-          {"v3.0 \u2014 David Rojas-Rueda | Colorado State University \u00b7 2026"}
+          {"v4.0 \u2014 David Rojas-Rueda | Colorado State University \u00b7 2026"}
         </div>
       </header>
 
@@ -460,14 +502,14 @@ function NoiseQPlus(){
                 Estimate how <span style={{color:P.terra}}>road traffic noise</span> affects your population's health
               </h2>
               <p style={{color:P.textMd,fontSize:15,lineHeight:1.75,maxWidth:640,margin:"0 0 32px",fontWeight:500}}>
-                Exposure to road traffic noise contributes to cardiovascular disease, disrupts sleep, and causes chronic annoyance, affecting millions worldwide. NoiseQ+ estimates the number of health cases attributable to excess noise levels in your city, region, or country, based on robust epidemiological evidence from systematic reviews and meta-analyses.
+                Exposure to road traffic noise contributes to cardiovascular disease and premature death, raises the risk of type 2 diabetes, disrupts sleep, and causes chronic annoyance, affecting millions worldwide. NoiseQ+ estimates the number of health cases attributable to excess noise levels in your city, region, or country, based on robust epidemiological evidence from systematic reviews and meta-analyses.
               </p>
               <button onClick={()=>goTo(1)} style={{...btnPrimary,padding:"14px 36px",fontSize:16}}>Start Assessment</button>
             </div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20,marginTop:4}}>
               {[
-                {t:"Health outcomes assessed",b:"Ischemic heart disease, stroke, heart failure, chronic annoyance, and sleep disturbance."},
-                {t:"What you will see",b:"Estimated attributable cases, rates per 100,000, population attributable fraction, and Disability-Adjusted Life Years (DALYs)."},
+                {t:"Health outcomes assessed",b:"Ischemic heart disease, stroke, heart failure, type 2 diabetes, cardiovascular mortality, chronic annoyance, and sleep disturbance."},
+                {t:"What you will see",b:"Estimated attributable cases and deaths, rates per 100,000, population attributable fraction, and Disability-Adjusted Life Years (DALYs) including both YLD and YLL."},
                 {t:"Methodology",b:"Comparative risk assessment approach recommended by the World Health Organization for estimating the health burden of environmental risk factors."},
                 {t:"Scientific basis",b:"Dose-response evidence from systematic reviews and meta-analyses, including the WHO Environmental Noise Guidelines for Europe (2018) and subsequent updates through 2025."},
               ].map((c,i)=>(
@@ -496,10 +538,10 @@ function NoiseQPlus(){
               <div style={{marginBottom:8}}>
                 <label style={labelStyle}>
                   Population size
-                  <Tip text="For cardiovascular outcomes (IHD, stroke, heart failure), the relevant population is adults aged 30 and older. For annoyance and sleep disturbance, adults 18 and older are relevant. If you only have total adult population, enter that \u2014 results will be approximate."/>
+                  <Tip text="For cardiovascular and diabetes outcomes (IHD, stroke, heart failure, type 2 diabetes, CVD mortality), the relevant population is adults aged 30 and older. For annoyance and sleep disturbance, adults 18 and older are relevant. If you only have total adult population, enter that \u2014 results will be approximate."/>
                 </label>
                 <input type="number" value={population} onChange={e=>setPopulation(parseInt(e.target.value)||0)} style={{...inputStyle,maxWidth:280}} placeholder="e.g., 500000"/>
-                <div style={{fontSize:12,color:P.textLt,marginTop:4,fontWeight:500}}>{"Adults aged 30+ for cardiovascular outcomes; adults aged 18+ for annoyance and sleep disturbance."}</div>
+                <div style={{fontSize:12,color:P.textLt,marginTop:4,fontWeight:500}}>{"Adults aged 30+ for cardiovascular and diabetes outcomes; adults aged 18+ for annoyance and sleep disturbance."}</div>
               </div>
             </div>
             <div style={cardStyle}>
@@ -624,11 +666,11 @@ function NoiseQPlus(){
               {outcomes.some(k=>HEALTH_OUTCOMES[k].type==="incidence")&&(
                 <div>
                   <label style={labelStyle}>
-                    Baseline disease rates (new cases per 100,000 adults per year)
-                    <Tip text="Background rates of disease in your population, regardless of noise. Replace with local data from your health department or country statistics. Defaults are approximate global estimates from GBD 2021."/>
+                    Baseline disease and mortality rates (per 100,000 adults per year)
+                    <Tip text="Background rates of disease or death in your population, regardless of noise. Replace with local data from your health department or country statistics. Cardiovascular mortality uses a death rate, not an incidence rate."/>
                   </label>
                   <p style={{fontSize:13,color:P.textMd,margin:"0 0 10px",fontWeight:500}}>
-                    Default values are approximate global estimates from the Global Burden of Disease (GBD) 2021 study. Replace with country-specific or local data from <a href="https://vizhub.healthdata.org/gbd-results/" target="_blank" style={{color:P.terra}}>healthdata.org</a> for more accurate estimates.
+                    Default values are approximate estimates and should be replaced with country-specific or local data from <a href="https://vizhub.healthdata.org/gbd-results/" target="_blank" style={{color:P.terra}}>healthdata.org</a> for more accurate estimates. Defaults for type 2 diabetes and cardiovascular mortality reflect US national means and should be replaced for non-US settings.
                   </p>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
                     {outcomes.filter(k=>HEALTH_OUTCOMES[k].type==="incidence").map(key=>{
@@ -636,7 +678,7 @@ function NoiseQPlus(){
                       const isC=customRates[key]!==undefined;
                       return(
                         <div key={key} style={{padding:"14px 16px",background:P.cream,borderRadius:4,border:"1px solid "+P.inputBd}}>
-                          <div style={{fontSize:13,fontWeight:700,color:P.dark,marginBottom:2,fontFamily:font}}>{o.shortName}</div>
+                          <div style={{fontSize:13,fontWeight:700,color:P.dark,marginBottom:2,fontFamily:font}}>{o.shortName}{o.mortality?" (deaths)":""}</div>
                           <div style={{fontSize:11,color:P.textLt,marginBottom:8,fontWeight:500}}>{o.ageGroup}</div>
                           <div style={{display:"flex",alignItems:"center",gap:8}}>
                             <input type="number" value={isC?customRates[key]:o.defaultBI} min={0}
@@ -678,17 +720,17 @@ function NoiseQPlus(){
             <div style={cardStyle}>
               <h3 style={{margin:"0 0 14px",fontSize:16,color:P.dark,fontWeight:700,fontFamily:font}}>
                 Estimated <span style={{color:P.terra}}>attributable health cases</span>
-                <Tip text="Estimated new health cases per year attributable to road traffic noise above the reference level. The range reflects uncertainty in the dose-response evidence (95% CI of the relative risk)."/>
+                <Tip text="Estimated new health cases (or deaths for cardiovascular mortality) per year attributable to road traffic noise above the reference level. The range reflects uncertainty in the dose-response evidence (95% CI of the relative risk)."/>
               </h3>
               {Object.keys(results.cvd).length>0&&(
                 <table style={{width:"100%",borderCollapse:"collapse",marginBottom:16}}>
                   <thead><tr style={{borderBottom:"2px solid "+P.inputBd}}>
-                    <th style={thStyle}>Health outcome</th><th style={{...thStyle,textAlign:"right"}}>Cases per year</th><th style={{...thStyle,textAlign:"right"}}>95% CI</th><th style={{...thStyle,textAlign:"right"}}>Rate per 100,000</th><th style={{...thStyle,textAlign:"right"}}>PAF</th>
+                    <th style={thStyle}>Health outcome</th><th style={{...thStyle,textAlign:"right"}}>Cases / deaths per year</th><th style={{...thStyle,textAlign:"right"}}>95% CI</th><th style={{...thStyle,textAlign:"right"}}>Rate per 100,000</th><th style={{...thStyle,textAlign:"right"}}>PAF</th>
                   </tr></thead>
                   <tbody>
                     {Object.entries(results.cvd).map(([key,r])=>(
                       <tr key={key} style={{borderBottom:"1px solid "+P.inputBd}}>
-                        <td style={{...tdStyle,fontWeight:700}}>{HEALTH_OUTCOMES[key].shortName}</td>
+                        <td style={{...tdStyle,fontWeight:700}}>{HEALTH_OUTCOMES[key].shortName}{HEALTH_OUTCOMES[key].mortality&&<span style={{fontSize:11,color:P.textLt,fontWeight:500}}> (deaths)</span>}</td>
                         <td style={{...tdStyle,textAlign:"right",fontWeight:800,color:P.terra,fontSize:17}}>{fmt(r.cases)}</td>
                         <td style={{...tdStyle,textAlign:"right",color:P.textLt,fontSize:13}}>({fmt(r.casesLow)} to {fmt(r.casesHigh)})</td>
                         <td style={{...tdStyle,textAlign:"right"}}>{fmt(r.rate)}</td>
@@ -717,7 +759,7 @@ function NoiseQPlus(){
             </div>
             {Object.keys(results.cvd).length>0&&(
               <div style={cardStyle}>
-                <h3 style={{margin:"0 0 12px",fontSize:14,color:P.dark,fontWeight:700,fontFamily:font}}>Attributable cases by outcome</h3>
+                <h3 style={{margin:"0 0 12px",fontSize:14,color:P.dark,fontWeight:700,fontFamily:font}}>Attributable cases and deaths by outcome</h3>
                 <SimpleBarChart data={Object.entries(results.cvd).map(([k,r])=>({name:HEALTH_OUTCOMES[k].shortName,value:r.cases,color:HEALTH_OUTCOMES[k].color}))} height={Math.max(120,Object.keys(results.cvd).length*46)}/>
               </div>
             )}
@@ -725,10 +767,10 @@ function NoiseQPlus(){
             <div style={cardStyle}>
               <h3 style={{margin:"0 0 4px",fontSize:16,color:P.dark,fontWeight:700,fontFamily:font}}>
                 Disability-Adjusted Life Years (<span style={{color:P.terra}}>DALYs</span>)
-                <Tip text="DALYs combine years of life lost due to premature death and years lived with disability. One DALY represents one year of healthy life lost. CVD DALYs shown here include only years lived with disability (YLD); premature mortality (YLL) is not included and would increase CVD burden estimates substantially."/>
+                <Tip text="DALYs combine years of life lost due to premature death (YLL) and years lived with disability (YLD). One DALY represents one year of healthy life lost. Morbidity outcomes contribute YLD; cardiovascular mortality contributes YLL."/>
               </h3>
               <p style={{color:P.textLt,fontSize:13,margin:"0 0 12px",fontWeight:500}}>
-                Combines time lived with illness into a single burden measure. See notes below for CVD DALY methodology.
+                Combines time lived with illness and life lost to premature death into a single burden measure.
               </p>
               <table style={{width:"100%",borderCollapse:"collapse"}}>
                 <thead><tr style={{borderBottom:"2px solid "+P.inputBd}}>
@@ -737,14 +779,14 @@ function NoiseQPlus(){
                 <tbody>
                   {Object.entries(results.erf).map(([key,r])=>(
                     <tr key={key} style={{borderBottom:"1px solid "+P.inputBd}}>
-                      <td style={{...tdStyle,fontWeight:700}}>{HEALTH_OUTCOMES[key].shortName}</td>
+                      <td style={{...tdStyle,fontWeight:700}}>{HEALTH_OUTCOMES[key].shortName} <span style={{fontSize:11,color:P.textLt}}>(YLD)</span></td>
                       <td style={{...tdStyle,textAlign:"right",fontWeight:800,color:P.terra}}>{fmt(r.dalys)}</td>
                       <td style={{...tdStyle,textAlign:"right",color:P.textLt,fontSize:13}}>({fmt(r.dalysLow)} to {fmt(r.dalysHigh)})</td>
                     </tr>
                   ))}
                   {Object.entries(results.cvd).map(([key,r])=>(
                     <tr key={key} style={{borderBottom:"1px solid "+P.inputBd}}>
-                      <td style={{...tdStyle,fontWeight:700}}>{HEALTH_OUTCOMES[key].shortName} <span style={{fontSize:11,color:P.textLt}}>(YLD only)</span></td>
+                      <td style={{...tdStyle,fontWeight:700}}>{HEALTH_OUTCOMES[key].shortName} <span style={{fontSize:11,color:P.textLt}}>({r.isMortality?"YLL":"YLD"})</span></td>
                       <td style={{...tdStyle,textAlign:"right",fontWeight:800,color:P.terra}}>{fmt(r.dalys)}</td>
                       <td style={{...tdStyle,textAlign:"right",color:P.textLt,fontSize:13}}>({fmt(r.dalysLow)} to {fmt(r.dalysHigh)})</td>
                     </tr>
@@ -756,10 +798,13 @@ function NoiseQPlus(){
                   </tr>
                 </tbody>
               </table>
+              <div style={{marginTop:12,padding:"10px 16px",background:P.terra+"08",borderRadius:4,border:"1px solid "+P.terra+"20",fontSize:13,color:P.dark,fontWeight:600}}>
+                {"Total = "+fmt(results.totalYLD)+" YLD + "+fmt(results.totalYLL)+" YLL = "+fmt(results.totalDalys)+" DALYs"}
+              </div>
               <div style={{...disclaimerStyle,marginTop:12,fontSize:12}}>
-                <strong>CVD DALY methodology:</strong> Cardiovascular DALYs represent <strong>years lived with disability (YLD) only</strong> and do not include years of life lost from premature mortality (YLL). This provides a conservative lower bound.
+                <strong>DALY methodology:</strong> Morbidity outcomes contribute years lived with disability (YLD): attributable cases \u00d7 disability weight \u00d7 duration. Cardiovascular mortality contributes years of life lost (YLL): attributable deaths \u00d7 remaining life expectancy (14.5 years).
                 {Object.entries(results.cvd).map(([key,r])=>(
-                  <span key={key}> {HEALTH_OUTCOMES[key].abbrev}: DW={r.dalyDW}, duration={r.dalyDuration}yr.</span>
+                  <span key={key}> {HEALTH_OUTCOMES[key].abbrev}: {r.isMortality?"YLL, remaining LE 14.5 yr":"DW="+r.dalyDW+", duration="+r.dalyDuration+"yr"}.</span>
                 ))}
                 {" "}Annoyance and sleep disturbance DALYs use WHO 2024 empirically derived disability weights with a 1-year prevalence-based approach. Range reflects disability weight uncertainty.
               </div>
@@ -770,8 +815,9 @@ function NoiseQPlus(){
                 <div>Reference level: {effCF} dB Lden{effCF===53?" (WHO recommended)":" (custom)"}</div>
                 <div>Population: {fmt(population)}</div>
                 <div>Annoyance DW: 0.011 (WHO 2024)</div>
-                <div>Sleep disturbance DW: 0.009 (WHO 2024)</div>
-                <div>Lden\u2192Lnight offset: \u2212{lnightOffset} dB</div>
+                <div>Sleep disturbance DW: 0.010 (WHO 2024)</div>
+                <div>CVD mortality: remaining LE 14.5 yr (YLL)</div>
+                <div>{"Lden\u2192Lnight offset: \u2212"+lnightOffset+" dB"}</div>
                 {Object.keys(customRates).length>0&&<div style={{gridColumn:"1/-1",color:P.terra,fontWeight:700}}>Custom baseline rates: {Object.keys(customRates).map(k=>HEALTH_OUTCOMES[k]?.shortName).join(", ")}</div>}
               </div>
             </div>
@@ -794,12 +840,12 @@ function NoiseQPlus(){
               <p style={{color:P.textMd,fontSize:14,margin:"0 0 24px",fontWeight:500}}>
                 These analyses show how results change under different assumptions. The main results use recommended default values.
               </p>
-              {/* IHD RR Sensitivity — NEW in v3.0 */}
+              {/* IHD RR Sensitivity */}
               {sens.rrScenarios.length>0&&(
                 <div style={{marginBottom:28}}>
                   <h3 style={{fontSize:15,color:P.dark,margin:"0 0 10px",fontWeight:700,fontFamily:font}}>
                     Effect of different <span style={{color:P.terra}}>IHD relative risk estimates</span>
-                    <Tip text="The IHD relative risk per 10 dB is the single most influential parameter. The WHO/van Kempen 2018 estimate of 1.08 has HIGH GRADE evidence quality and is legally codified in EU Directive 2020/367. Pershagen et al. 2025 found a lower overall estimate (1.017) but a higher low-bias subset estimate (1.026). This sensitivity analysis shows how the choice of estimate affects the number of attributable IHD cases."/>
+                    <Tip text="The IHD relative risk per 10 dB is a debated parameter. The WHO/van Kempen 2018 estimate of 1.08 has HIGH GRADE evidence quality and is legally codified in EU Directive 2020/367. Pershagen et al. 2025 found a lower overall estimate (1.017) and a separate MI-specific estimate (1.029). This sensitivity analysis shows how the choice affects attributable IHD cases."/>
                   </h3>
                   <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
                     <thead><tr style={{borderBottom:"2px solid "+P.inputBd}}>
@@ -817,7 +863,7 @@ function NoiseQPlus(){
                     </tbody>
                   </table>
                   <p style={{fontSize:12,color:P.textLt,marginTop:8,fontWeight:500,lineHeight:1.55}}>
-                    The 4-fold difference in excess risk between WHO 2018 (RR 1.08) and Pershagen 2025 overall (RR 1.017) likely reflects differences in study inclusion criteria and exposure assessment precision. The tool defaults to 1.08 for regulatory comparability and because it has the only HIGH GRADE evidence rating.
+                    The large difference in excess risk between WHO 2018 (RR 1.08) and Pershagen 2025 overall (RR 1.017) reflects differences in study inclusion criteria and exposure assessment. The tool defaults to 1.08 for regulatory comparability and because it has the only HIGH GRADE evidence rating. Because cardiovascular morbidity is a small share of total DALYs, this choice shifts the total burden by under 2%.
                   </p>
                 </div>
               )}
@@ -826,7 +872,7 @@ function NoiseQPlus(){
                 <div style={{marginBottom:28}}>
                   <h3 style={{fontSize:15,color:P.dark,margin:"0 0 10px",fontWeight:700,fontFamily:font}}>
                     Effect of different <span style={{color:P.terra}}>reference noise levels</span>
-                    <Tip text="Lowering the reference level increases estimated burden because more of the population is considered exposed. A 5 dB decrease can approximately double the estimated attributable cases."/>
+                    <Tip text="Lowering the reference level increases estimated burden because more of the population is considered exposed. A 5 dB decrease can substantially increase estimated attributable cases."/>
                   </h3>
                   <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
                     <thead><tr style={{borderBottom:"2px solid "+P.inputBd}}>
@@ -851,7 +897,7 @@ function NoiseQPlus(){
                 <div>
                   <h3 style={{fontSize:15,color:P.dark,margin:"0 0 10px",fontWeight:700,fontFamily:font}}>
                     Effect of different <span style={{color:P.terra}}>disability weight values</span> on DALYs
-                    <Tip text="Disability weights represent the severity of a health condition on a 0\u20131 scale. The choice of weight set has a major impact on DALY estimates, particularly for sleep disturbance (where weights differ 8-fold between 2011 and 2024)."/>
+                    <Tip text="Disability weights represent the severity of a health condition on a 0\u20131 scale. The choice of weight set has a major impact on DALY estimates, particularly for sleep disturbance (where weights differ several-fold between 2011 and 2024)."/>
                   </h3>
                   <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
                     <thead><tr style={{borderBottom:"2px solid "+P.inputBd}}>
@@ -870,7 +916,7 @@ function NoiseQPlus(){
                     </tbody>
                   </table>
                   <p style={{fontSize:12,color:P.textLt,marginTop:8,fontWeight:500,lineHeight:1.55}}>
-                    WHO 2024 weights are empirically derived and recommended for new assessments. Legacy 2011 weights are shown for comparison with older published studies. Note: switching from 2011 to 2024 weights reduces annoyance DALYs by approximately 45% and sleep disturbance DALYs by approximately 87%.
+                    WHO 2024 weights are empirically derived and recommended for new assessments. Legacy 2011 weights are shown for comparison with older published studies. Disability weight selection is among the largest drivers of total DALY uncertainty.
                   </p>
                 </div>
               )}
@@ -897,8 +943,8 @@ function NoiseQPlus(){
                   {[
                     {n:"1",t:"Exposure data",d:"Population distribution across noise level bands (dB Lden)"},
                     {n:"2",t:"Dose-response",d:"Apply relative risks or exposure-response functions from meta-analyses"},
-                    {n:"3",t:"Health burden",d:"Calculate attributable cases using the Population Attributable Fraction"},
-                    {n:"4",t:"DALYs",d:"Estimate years lived with disability using WHO disability weights"},
+                    {n:"3",t:"Health burden",d:"Calculate attributable cases and deaths using the Population Attributable Fraction"},
+                    {n:"4",t:"DALYs",d:"Estimate YLD for morbidity and YLL for mortality using WHO disability weights and life expectancy"},
                   ].map((s,i)=>(
                     <div key={i} style={{flex:1,display:"flex",alignItems:"stretch"}}>
                       <div style={{padding:"14px 16px",background:P.terra+"08",borderRadius:4,border:"1px solid "+P.terra+"18",flex:1}}>
@@ -914,10 +960,10 @@ function NoiseQPlus(){
               {/* PAF formula */}
               <div style={{marginBottom:28}}>
                 <h3 style={{fontSize:15,margin:"0 0 8px",fontWeight:700,color:P.dark,fontFamily:font}}>
-                  Cardiovascular outcomes: <span style={{color:P.terra}}>Population Attributable Fraction</span> method
+                  Cardiovascular and metabolic outcomes: <span style={{color:P.terra}}>Population Attributable Fraction</span> method
                 </h3>
                 <p style={{fontSize:14,color:P.textMd,lineHeight:1.65,marginBottom:10,fontWeight:500}}>
-                  For cardiovascular diseases, the tool applies a relative risk per 10 dB increase from meta-analyses. For each noise band, it calculates the excess risk relative to the reference level, combines these across the population, and multiplies by the baseline disease rate.
+                  For cardiovascular disease, diabetes, and cardiovascular mortality, the tool applies a relative risk per 10 dB increase from meta-analyses. For each noise band, it calculates the excess risk relative to the reference level, combines these across the population, and multiplies by the baseline disease or mortality rate.
                 </p>
                 <div style={{background:P.cream,padding:"14px 18px",borderRadius:4,fontFamily:"'Courier New',monospace",fontSize:13,color:P.dark,border:"1px solid "+P.inputBd}}>
                   {"RR(Lden) = RR_per10dB ^ ((Lden_midpoint \u2212 counterfactual) / 10)"}<br/>
@@ -939,9 +985,12 @@ function NoiseQPlus(){
                 <div style={{background:P.cream,padding:"14px 18px",borderRadius:4,fontFamily:"'Courier New',monospace",fontSize:13,color:P.dark,border:"1px solid "+P.inputBd}}>
                   {"% Highly Annoyed = 78.9270 \u2212 3.1162 \u00d7 Lden + 0.0342 \u00d7 Lden\u00b2"}<br/>
                   {"  Source: Guski et al. 2017 (WHO 2018); valid 45\u201375 dB Lden"}<br/><br/>
-                  {"% Highly Sleep Disturbed = 20.8 \u2212 1.05 \u00d7 Lnight + 0.01486 \u00d7 Lnight\u00b2"}<br/>
-                  {"  Source: Miedema & Vos 2007; valid 40\u201365 dB Lnight"}
+                  {"% Highly Sleep Disturbed = 31.18323 \u2212 1.47351 \u00d7 Lnight + 0.01851 \u00d7 Lnight\u00b2"}<br/>
+                  {"  Source: Smith et al. 2022; valid 40\u201365 dB Lnight"}
                 </div>
+                <p style={{fontSize:12,color:P.textLt,marginTop:8,fontWeight:500}}>
+                  Smith et al. 2022 updates the Basner & McGuire 2018 WHO sleep function (the function adopted in EU Directive 2020/367 Annex III) with 11 additional studies (36 total, ~173,000 responses).
+                </p>
               </div>
               {/* Curves */}
               <div style={{marginBottom:28}}>
@@ -957,14 +1006,16 @@ function NoiseQPlus(){
               </div>
               {/* CVD Curves */}
               <div style={{marginBottom:28}}>
-                <h3 style={{fontSize:15,margin:"0 0 8px",fontWeight:700,color:P.dark,fontFamily:font}}>Cardiovascular <span style={{color:P.terra}}>dose-response curves</span></h3>
+                <h3 style={{fontSize:15,margin:"0 0 8px",fontWeight:700,color:P.dark,fontFamily:font}}>Cardiovascular and metabolic <span style={{color:P.terra}}>dose-response curves</span></h3>
                 <p style={{fontSize:13,color:P.textMd,marginBottom:10,fontWeight:500}}>Relative risk by noise level (Lden), reference level 53 dB.</p>
                 <SimpleLineChart
                   xMin={50} xMax={77} yMin={1.0} yMax={1.22} xLabel="Noise level, Lden (dB)" yLabel="Relative Risk" yDecimals={2}
                   series={[
-                    {name:"IHD (RR 1.08/10dB)",color:P.terra,data:cvdCurveData.map(d=>({x:d.db,y:d.ihd}))},
-                    {name:"Heart Failure (RR 1.04/10dB)",color:P.gold,data:cvdCurveData.map(d=>({x:d.db,y:d.hf}))},
-                    {name:"Stroke (RR 1.025/10dB)",color:"#6b4c3b",data:cvdCurveData.map(d=>({x:d.db,y:d.stroke}))},
+                    {name:"IHD (1.08)",color:P.terra,data:cvdCurveData.map(d=>({x:d.db,y:d.ihd}))},
+                    {name:"T2DM (1.07)",color:"#9c6b3f",data:cvdCurveData.map(d=>({x:d.db,y:d.t2dm}))},
+                    {name:"CVD mort. (1.05)",color:"#5a2a18",data:cvdCurveData.map(d=>({x:d.db,y:d.cvdmort}))},
+                    {name:"HF (1.04)",color:P.gold,data:cvdCurveData.map(d=>({x:d.db,y:d.hf}))},
+                    {name:"Stroke (1.025)",color:"#6b4c3b",data:cvdCurveData.map(d=>({x:d.db,y:d.stroke}))},
                   ]}/>
               </div>
               {/* Evidence table */}
@@ -990,17 +1041,20 @@ function NoiseQPlus(){
                 <h3 style={{fontSize:15,margin:"0 0 8px",fontWeight:700,color:P.dark,fontFamily:font}}>DALY calculation methodology</h3>
                 <div style={{fontSize:14,color:P.textMd,lineHeight:1.7,fontWeight:500}}>
                   <p style={{margin:"0 0 8px"}}>
-                    <strong>Annoyance and sleep disturbance DALYs:</strong> Calculated as number of affected persons multiplied by the disability weight, using a prevalence-based approach with a 1-year duration. Default disability weights are from the WHO 2024 empirical study (Charalampous et al. BMJ Public Health 2024;2(1):e000470): 0.011 for severe annoyance, 0.009 for sleep disturbance.
+                    <strong>Annoyance and sleep disturbance DALYs:</strong> Calculated as number of affected persons multiplied by the disability weight, using a prevalence-based approach with a 1-year duration. Default disability weights are from the WHO 2024 empirical study (Charalampous et al. BMJ Public Health 2024;2(1):e000470): 0.011 for severe annoyance, 0.010 for sleep disturbance.
                   </p>
                   <p style={{margin:"0 0 8px"}}>
-                    <strong>Cardiovascular DALYs:</strong> Calculated as attributable incident cases multiplied by an outcome-specific disability weight and average duration. These represent <strong>YLD only</strong> (years lived with disability). Years of life lost from premature mortality (YLL) are not included in this version; CVD DALY estimates should therefore be interpreted as conservative lower bounds.
+                    <strong>Cardiovascular and metabolic morbidity DALYs (YLD):</strong> Calculated as attributable incident cases multiplied by an outcome-specific disability weight and average duration.
+                  </p>
+                  <p style={{margin:"0 0 8px"}}>
+                    <strong>Cardiovascular mortality DALYs (YLL):</strong> Calculated as attributable premature deaths multiplied by the remaining life expectancy at the average age of cardiovascular death (14.5 years), consistent with the WHO standard life table.
                   </p>
                   <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,marginTop:8}}>
                     <thead><tr style={{borderBottom:"1px solid "+P.inputBd}}>
-                      <th style={{...thStyle,fontSize:10}}>CVD Outcome</th><th style={{...thStyle,fontSize:10}}>DW</th><th style={{...thStyle,fontSize:10}}>Duration</th><th style={{...thStyle,fontSize:10}}>Basis</th>
+                      <th style={{...thStyle,fontSize:10}}>Morbidity outcome</th><th style={{...thStyle,fontSize:10}}>DW</th><th style={{...thStyle,fontSize:10}}>Duration</th><th style={{...thStyle,fontSize:10}}>Basis</th>
                     </tr></thead>
                     <tbody>
-                      {["ihd","stroke","hf"].map(k=>{const o=HEALTH_OUTCOMES[k];return o?(
+                      {["ihd","stroke","hf","t2dm"].map(k=>{const o=HEALTH_OUTCOMES[k];return o?(
                         <tr key={k} style={{borderBottom:"1px solid "+P.inputBd}}>
                           <td style={{padding:"6px 12px",fontWeight:600}}>{o.shortName}</td>
                           <td style={{padding:"6px 12px"}}>{o.dalyDW}</td>
@@ -1008,6 +1062,12 @@ function NoiseQPlus(){
                           <td style={{padding:"6px 12px",color:P.textLt,fontSize:11}}>{o.dalyDWNote}</td>
                         </tr>
                       ):null;})}
+                      <tr style={{borderBottom:"1px solid "+P.inputBd}}>
+                        <td style={{padding:"6px 12px",fontWeight:600}}>Cardiovascular mortality</td>
+                        <td style={{padding:"6px 12px"}}>{"\u2014"}</td>
+                        <td style={{padding:"6px 12px"}}>14.5 yr LE</td>
+                        <td style={{padding:"6px 12px",color:P.textLt,fontSize:11}}>YLL = deaths \u00d7 remaining life expectancy at average age of CVD death</td>
+                      </tr>
                     </tbody>
                   </table>
                 </div>
@@ -1018,7 +1078,7 @@ function NoiseQPlus(){
                 <div style={{fontSize:14,color:P.textMd,lineHeight:1.7,fontWeight:500}}>
                   <p style={{margin:"0 0 8px"}}>The dose-response functions are derived primarily from European populations. Their applicability to other regions, particularly low- and middle-income countries with different traffic patterns, housing types, and cultural noise sensitivities, has not been fully established.</p>
                   <p style={{margin:"0 0 8px"}}>Most underlying cardiovascular studies did not fully adjust for air pollution co-exposure. Although available evidence suggests the noise effect is largely independent of air pollution, some residual confounding cannot be excluded.</p>
-                  <p style={{margin:"0 0 8px"}}>Cardiovascular DALYs represent YLD only and substantially underestimate the full disease burden because they exclude premature mortality (YLL). The EEA estimates approximately 12,000 premature deaths per year in Europe from road traffic noise.</p>
+                  <p style={{margin:"0 0 8px"}}>Heart failure is estimated from a cardiomyopathy-based relative risk used as a conservative proxy, which underestimates clinical heart failure incidence. Hypertension and cognitive outcomes are not included, despite emerging noise associations.</p>
                   <p style={{margin:"0 0 8px"}}>The quality of noise exposure data varies considerably. Strategic noise maps produced under the EU Environmental Noise Directive use standardized methods, but maps from other contexts may differ substantially.</p>
                   <p style={{margin:"0 0 8px"}}>When Lnight data are not directly available, the tool converts from Lden using a fixed offset (default: \u22129 dB). The actual relationship depends on local traffic temporal patterns and may introduce error.</p>
                   <p style={{margin:0}}>This tool covers road traffic noise only. Health impacts from railway, aircraft, and industrial noise require separate assessment with source-specific dose-response functions.</p>
@@ -1032,19 +1092,22 @@ function NoiseQPlus(){
                 <p style={{margin:"0 0 4px"}}>1. van Kempen E, Casas M, Pershagen G, Foraster M. WHO Environmental Noise Guidelines for the European Region: A Systematic Review on Environmental Noise and Cardiovascular and Metabolic Effects. <em>Int J Environ Res Public Health.</em> 2018;15(2):379.</p>
                 <p style={{margin:"0 0 4px"}}>2. Babisch W. Updated exposure-response relationship between road traffic noise and coronary heart diseases: A meta-analysis. <em>Noise Health.</em> 2014;16(68):1\u20139.</p>
                 <p style={{margin:"0 0 4px"}}>3. Pershagen G, Pyko A, Aasvang GM, et al. Road traffic noise and incident ischemic heart disease, myocardial infarction, and stroke: A systematic review and meta-analysis. <em>Environ Epidemiol.</em> 2025;9(3):e400.</p>
-                <p style={{margin:"0 0 4px"}}>4. S\u00f8rensen M, Pershagen G, Thacher JD, et al. Health position paper and redox perspectives \u2014 Disease burden by transportation noise. <em>Redox Biol.</em> 2024;69:102995.</p>
-                <p style={{margin:"0 0 4px"}}>5. Guski R, Schreckenberg D, Schuemer R. WHO Environmental Noise Guidelines for the European Region: A Systematic Review on Environmental Noise and Annoyance. <em>Int J Environ Res Public Health.</em> 2017;14(12):1539.</p>
-                <p style={{margin:"0 0 4px"}}>6. Miedema HME, Vos H. Associations between self-reported sleep disturbance and environmental noise based on reanalyses of pooled data from 24 studies. <em>Behav Sleep Med.</em> 2007;5(1):1\u201320.</p>
-                <p style={{margin:"0 0 4px"}}>7. Basner M, McGuire S. WHO Environmental Noise Guidelines for the European Region: A Systematic Review on Environmental Noise and Effects on Sleep. <em>Int J Environ Res Public Health.</em> 2018;15(3):519.</p>
-                <p style={{margin:"0 0 4px"}}>8. Charalampous P, Maas CCHM, Haagsma JA. Disability weights for environmental noise-related health states. <em>BMJ Public Health.</em> 2024;2(1):e000470.</p>
-                <p style={{margin:"0 0 4px"}}>9. World Health Organization. <em>Environmental Noise Guidelines for the European Region.</em> Copenhagen: WHO; 2018. ISBN 978-92-890-5356-3.</p>
-                <p style={{margin:"0 0 4px"}}>10. Fritschi L, Brown L, Kim R, Schwela D, Kephalopoulos S. <em>Burden of Disease from Environmental Noise.</em> Copenhagen: WHO; 2011. ISBN 978-92-890-0229-5.</p>
-                <p style={{margin:0}}>11. Commission Delegated Directive (EU) 2020/367 amending Annex III to Directive 2002/49/EC. <em>Official Journal of the European Union.</em> 2020;L 67:132\u2013138.</p>
+                <p style={{margin:"0 0 4px"}}>4. Engelmann N, Blanes Guardia N, Fons Esteve J, Vienneau D, R\u00f6\u00f6sli M. Environmental Noise Health Risk Assessment: Methodology for Assessing Health Risks Using Data Reported Under the Environmental Noise Directive. ETC/HE Report 2023/11. Bilthoven: European Topic Centre on Human Health and the Environment; 2023.</p>
+                <p style={{margin:"0 0 4px"}}>5. M\u00fcnzel T, Molitor M, Kuntic M, et al. Transportation noise pollution and cardiovascular health. <em>Circ Res.</em> 2024;134:1113\u20131135.</p>
+                <p style={{margin:"0 0 4px"}}>6. Vienneau D, Wicki B, Fl\u00fckiger B, et al. Long-term exposure to transportation noise and diabetes mellitus mortality: A national cohort study and updated meta-analysis. <em>Environ Health.</em> 2024;23(1):46.</p>
+                <p style={{margin:"0 0 4px"}}>7. Guski R, Schreckenberg D, Schuemer R. WHO Environmental Noise Guidelines for the European Region: A Systematic Review on Environmental Noise and Annoyance. <em>Int J Environ Res Public Health.</em> 2017;14(12):1539.</p>
+                <p style={{margin:"0 0 4px"}}>8. Smith MG, Cordoza M, Basner M. Environmental Noise and Effects on Sleep: An Update to the WHO Systematic Review and Meta-Analysis. <em>Environ Health Perspect.</em> 2022;130(7):076001.</p>
+                <p style={{margin:"0 0 4px"}}>9. Basner M, McGuire S. WHO Environmental Noise Guidelines for the European Region: A Systematic Review on Environmental Noise and Effects on Sleep. <em>Int J Environ Res Public Health.</em> 2018;15(3):519.</p>
+                <p style={{margin:"0 0 4px"}}>10. Charalampous P, Maas CCHM, Haagsma JA. Disability weights for environmental noise-related health states. <em>BMJ Public Health.</em> 2024;2(1):e000470.</p>
+                <p style={{margin:"0 0 4px"}}>11. S\u00f8rensen M, Pershagen G, Thacher JD, et al. Health position paper and redox perspectives \u2014 Disease burden by transportation noise. <em>Redox Biol.</em> 2024;69:102995.</p>
+                <p style={{margin:"0 0 4px"}}>12. World Health Organization. <em>Environmental Noise Guidelines for the European Region.</em> Copenhagen: WHO; 2018. ISBN 978-92-890-5356-3.</p>
+                <p style={{margin:"0 0 4px"}}>13. Fritschi L, Brown L, Kim R, Schwela D, Kephalopoulos S. <em>Burden of Disease from Environmental Noise.</em> Copenhagen: WHO; 2011. ISBN 978-92-890-0229-5.</p>
+                <p style={{margin:0}}>14. Commission Delegated Directive (EU) 2020/367 amending Annex III to Directive 2002/49/EC. <em>Official Journal of the European Union.</em> 2020;L 67:132\u2013138.</p>
               </div>
             </div>
 
             <div style={disclaimerStyle}>
-              <strong>Citation:</strong> Rojas-Rueda D. NoiseQ+: Road Traffic Noise Health Impact Assessment Tool, version 3.0. Colorado State University; 2026. Available at: https://github.com/drojas-rueda/noiseq-plus
+              <strong>Citation:</strong> Rojas-Rueda D. NoiseQ+: Road Traffic Noise Health Impact Assessment Tool, version 4.0. Colorado State University; 2026. Parameters aligned with Rojas-Rueda D. Health burden of transportation noise in the United States: a national assessment with equity analysis. <em>Environ Res.</em> 2026. doi:10.1016/j.envres.2026.124921.
             </div>
             <div className="no-print" style={{display:"flex",justifyContent:"space-between",marginTop:20}}>
               <button onClick={()=>goTo(4)} style={btnSecondary}>Sensitivity Analysis</button>
@@ -1056,7 +1119,7 @@ function NoiseQPlus(){
 
       {/* FOOTER */}
       <footer style={{padding:"20px 36px",textAlign:"center",fontSize:12,color:P.textLt,borderTop:"1px solid "+P.inputBd,background:P.white,fontWeight:500,fontFamily:font}}>
-        {"NoiseQ+ v3.0 \u00b7 David Rojas-Rueda \u00b7 Colorado State University \u00b7 2026"}
+        {"NoiseQ+ v4.0 \u00b7 David Rojas-Rueda \u00b7 Colorado State University \u00b7 2026"}
       </footer>
     </div>
   );
